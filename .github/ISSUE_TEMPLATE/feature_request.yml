@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest a new command, flag, or behavior.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Workflow
+      description: What should an agent or automation script be able to do?
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Proposed command shape
+      description: Example commands or flags.
+      render: bash
+    validations:
+      required: false
+  - type: textarea
+    id: json
+    attributes:
+      label: JSON output
+      description: Expected JSON shape or error code, if relevant.
+      render: json
+    validations:
+      required: false
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+    validations:
+      required: false

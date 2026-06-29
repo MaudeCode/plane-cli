@@ -1,0 +1,39 @@
+name: Bug report
+description: Report a reproducible problem with plane-cli.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include Plane API keys, OAuth tokens, or private config files.
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact command that failed. Redact sensitive values.
+      render: bash
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: JSON output, error output, or relevant logs.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, shell, Bun version, and plane-cli version or commit.
+    validations:
+      required: false

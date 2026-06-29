@@ -739,4 +739,251 @@ describe("command JSON output", () => {
       "https://api.plane.so/api/v1/workspaces/acme/projects/PROJECT-ID/work-items/ISSUE-ID/attachments/ATTACHMENT-ID/",
     );
   });
+
+  test("completes attachment uploads with a standalone top-level asset_id", async () => {
+    const cwd = await tempDir();
+    const filePath = join(cwd, "asset.txt");
+    await writeFile(filePath, "asset output");
+    await writeFile(
+      join(cwd, ".plane-cli.yaml"),
+      "defaultWorkspace: prod\nworkspaces:\n  prod:\n    workspaceSlug: acme\n    apiKey: plane_api_secret\n",
+    );
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response({
+          next_page_results: false,
+          results: [{ id: "PROJECT-ID", identifier: "WEB", name: "Web" }],
+        }),
+      )
+      .mockResolvedValueOnce(
+        response({
+          asset_id: "ASSET-ID",
+          fields: { key: "attachments/a/asset.txt" },
+          upload_url: "https://uploads.example.test/asset",
+        }),
+      )
+      .mockResolvedValueOnce(new Response(undefined, { status: 204 }))
+      .mockResolvedValueOnce(response({ id: "ASSET-ID", is_uploaded: true }));
+
+    const result = await runCli(
+      [
+        "issue",
+        "attachment",
+        "upload",
+        "ISSUE-ID",
+        "--project",
+        "Web",
+        "--file",
+        filePath,
+        "--type",
+        "text/plain",
+        "--json",
+      ],
+      { cwd, env: {}, fetch, home: cwd },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(fetch.mock.calls[3]?.[0]).toBe(
+      "https://api.plane.so/api/v1/workspaces/acme/projects/PROJECT-ID/work-items/ISSUE-ID/attachments/ASSET-ID/",
+    );
+  });
+
+  test("completes attachment uploads using credential ID precedence", async () => {
+    const cwd = await tempDir();
+    const filePath = join(cwd, "asset.txt");
+    await writeFile(filePath, "asset output");
+    await writeFile(
+      join(cwd, ".plane-cli.yaml"),
+      "defaultWorkspace: prod\nworkspaces:\n  prod:\n    workspaceSlug: acme\n    apiKey: plane_api_secret\n",
+    );
+
+    const cases = [
+      {
+        credentials: {
+          asset: { id: "NESTED-ASSET-ID" },
+          asset_id: "ASSET-ID",
+          attachment: { id: "NESTED-ATTACHMENT-ID" },
+          attachment_id: "ATTACHMENT-ID",
+          id: "ID",
+        },
+        expectedId: "ID",
+      },
+      {
+        credentials: {
+          asset: { id: "NESTED-ASSET-ID" },
+          asset_id: "ASSET-ID",
+          attachment: { id: "NESTED-ATTACHMENT-ID" },
+          attachment_id: "ATTACHMENT-ID",
+        },
+        expectedId: "ATTACHMENT-ID",
+      },
+      {
+        credentials: {
+          asset: { id: "NESTED-ASSET-ID" },
+          asset_id: "ASSET-ID",
+          attachment: { id: "NESTED-ATTACHMENT-ID" },
+        },
+        expectedId: "NESTED-ATTACHMENT-ID",
+      },
+      {
+        credentials: {
+          asset: { id: "NESTED-ASSET-ID" },
+          asset_id: "ASSET-ID",
+        },
+        expectedId: "ASSET-ID",
+      },
+      {
+        credentials: {
+          asset: { id: "NESTED-ASSET-ID" },
+        },
+        expectedId: "NESTED-ASSET-ID",
+      },
+    ];
+
+    for (const [index, entry] of cases.entries()) {
+      const fetch = vi
+        .fn()
+        .mockResolvedValueOnce(
+          response({
+            next_page_results: false,
+            results: [{ id: "PROJECT-ID", identifier: "WEB", name: "Web" }],
+          }),
+        )
+        .mockResolvedValueOnce(
+          response({
+            ...entry.credentials,
+            fields: { key: `attachments/a/asset-${index}.txt` },
+            upload_url: `https://uploads.example.test/asset-${index}`,
+          }),
+        )
+        .mockResolvedValueOnce(new Response(undefined, { status: 204 }))
+        .mockResolvedValueOnce(response({ id: entry.expectedId, is_uploaded: true }));
+
+      const result = await runCli(
+        [
+          "issue",
+          "attachment",
+          "upload",
+          "ISSUE-ID",
+          "--project",
+          "Web",
+          "--file",
+          filePath,
+          "--type",
+          "text/plain",
+          "--json",
+        ],
+        { cwd, env: {}, fetch, home: cwd },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(fetch.mock.calls[3]?.[0]).toBe(
+        `https://api.plane.so/api/v1/workspaces/acme/projects/PROJECT-ID/work-items/ISSUE-ID/attachments/${entry.expectedId}/`,
+      );
+    }
+  });
+
+  test("uploads attachment files with nested upload_data credentials", async () => {
+    const cwd = await tempDir();
+    const filePath = join(cwd, "notes.md");
+    await writeFile(filePath, "# Notes\n");
+    await writeFile(
+      join(cwd, ".plane-cli.yaml"),
+      "defaultWorkspace: prod\nworkspaces:\n  prod:\n    workspaceSlug: acme\n    apiKey: plane_api_secret\n",
+    );
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response({
+          next_page_results: false,
+          results: [{ id: "PROJECT-ID", identifier: "CASA", name: "Casa" }],
+        }),
+      )
+      .mockResolvedValueOnce(response({ id: "ISSUE-ID", sequence_id: 1 }))
+      .mockResolvedValueOnce(
+        response({
+          asset_id: "ASSET-ID",
+          asset_url: "https://assets.example.test/notes.md",
+          attachment: { id: "ATTACHMENT-ID" },
+          upload_data: {
+            fields: { key: "attachments/a/notes.md", policy: "policy" },
+            url: "https://uploads.example.test/nested",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(new Response(undefined, { status: 204 }))
+      .mockResolvedValueOnce(response({ id: "ATTACHMENT-ID", is_uploaded: true }));
+
+    const result = await runCli(
+      [
+        "issue",
+        "attachment",
+        "upload",
+        "CASA-1",
+        "--project",
+        "CASA",
+        "--file",
+        filePath,
+        "--name",
+        "notes.md",
+        "--type",
+        "text/markdown",
+        "--json",
+      ],
+      { cwd, env: {}, fetch, home: cwd },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      data: { attachment: { id: "ATTACHMENT-ID", is_uploaded: true } },
+      ok: true,
+    });
+    expect(fetch.mock.calls[3]?.[0]).toBe("https://uploads.example.test/nested");
+    expect(fetch.mock.calls[3]?.[1]).toMatchObject({ method: "POST" });
+    const uploadBody = (fetch.mock.calls[3]?.[1] as RequestInit | undefined)?.body;
+    expect(uploadBody).toBeInstanceOf(FormData);
+    const uploadForm = uploadBody as FormData;
+    expect(uploadForm.get("key")).toBe("attachments/a/notes.md");
+    expect(uploadForm.get("policy")).toBe("policy");
+    const filePart = uploadForm.get("file");
+    expect(filePart).toBeInstanceOf(Blob);
+    expect(await (filePart as Blob).text()).toBe("# Notes\n");
+    expect(fetch.mock.calls[4]?.[0]).toBe(
+      "https://api.plane.so/api/v1/workspaces/acme/projects/PROJECT-ID/work-items/ISSUE-ID/attachments/ATTACHMENT-ID/",
+    );
+  });
+
+  test("lists attachments from value response envelopes", async () => {
+    const cwd = await tempDir();
+    await writeFile(
+      join(cwd, ".plane-cli.yaml"),
+      "defaultWorkspace: prod\nworkspaces:\n  prod:\n    workspaceSlug: acme\n    apiKey: plane_api_secret\n",
+    );
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response({
+          next_page_results: false,
+          results: [{ id: "PROJECT-ID", identifier: "CASA", name: "Casa" }],
+        }),
+      )
+      .mockResolvedValueOnce(response({ id: "ISSUE-ID", sequence_id: 1 }))
+      .mockResolvedValueOnce(
+        response({
+          value: [{ id: "ATTACHMENT-ID", name: "notes.md" }],
+        }),
+      );
+
+    const result = await runCli(
+      ["issue", "attachment", "list", "CASA-1", "--project", "CASA", "--json"],
+      { cwd, env: {}, fetch, home: cwd },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      data: [{ id: "ATTACHMENT-ID", name: "notes.md" }],
+      ok: true,
+    });
+  });
 });

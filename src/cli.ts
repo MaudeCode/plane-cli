@@ -1107,10 +1107,17 @@ function attachmentAttributes(context: CommandContext): JsonObject | undefined {
 }
 
 function attachmentIdFromCredentials(credentials: JsonObject): string | undefined {
-  for (const key of ["id", "attachment_id", "asset_id"]) {
+  for (const key of ["id", "attachment_id"]) {
     const value = credentials[key];
     if (typeof value === "string") return value;
   }
+  const attachment = credentials.attachment;
+  if (typeof attachment === "object" && attachment !== null && !Array.isArray(attachment)) {
+    const value = (attachment as JsonObject).id;
+    if (typeof value === "string") return value;
+  }
+  const assetId = credentials.asset_id;
+  if (typeof assetId === "string") return assetId;
   const asset = credentials.asset;
   if (typeof asset === "object" && asset !== null && !Array.isArray(asset)) {
     const value = (asset as JsonObject).id;

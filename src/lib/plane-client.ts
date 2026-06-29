@@ -473,6 +473,9 @@ export class PlaneClient {
         }
         cursor = nextCursor;
         if (cursor) seenCursors.add(cursor);
+      } else if (Array.isArray(page.value)) {
+        results.push(...(page.value as JsonObject[]));
+        cursor = undefined;
       } else if (Array.isArray(page)) {
         results.push(...page);
         cursor = undefined;
@@ -639,7 +642,8 @@ function extractUploadUrl(credentials: JsonObject): string {
     stringField(credentials, "upload_url") ??
     stringField(credentials, "uploadUrl") ??
     stringField(credentials, "url") ??
-    stringField(credentials, "asset_upload_url");
+    stringField(credentials, "asset_upload_url") ??
+    stringField(nestedObject(credentials, "upload_data"), "url");
   if (!value) {
     throw new AppError(
       "API_ERROR",
@@ -659,6 +663,7 @@ function extractUploadFields(credentials: JsonObject): JsonObject {
     credentials.upload_fields,
     credentials.form_fields,
     credentials.form_data,
+    nestedObject(credentials, "upload_data")?.fields,
     typeof credentials.data === "object" && credentials.data !== null
       ? (credentials.data as JsonObject).fields
       : undefined,
@@ -671,7 +676,14 @@ function extractUploadFields(credentials: JsonObject): JsonObject {
   return {};
 }
 
-function stringField(object: JsonObject, key: string): string | undefined {
-  const value = object[key];
+function stringField(object: JsonObject | undefined, key: string): string | undefined {
+  const value = object?.[key];
   return typeof value === "string" ? value : undefined;
+}
+
+function nestedObject(object: JsonObject, key: string): JsonObject | undefined {
+  const value = object[key];
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as JsonObject)
+    : undefined;
 }

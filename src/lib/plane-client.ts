@@ -31,7 +31,7 @@ export class PlaneClient {
 
   async createProject(input: JsonObject): Promise<JsonObject> {
     return this.request("POST", `/api/v1/workspaces/${this.workspace.workspaceSlug}/projects/`, {
-      body: input,
+      body: normalizeProjectInput(input),
     });
   }
 
@@ -40,7 +40,7 @@ export class PlaneClient {
       "PATCH",
       `/api/v1/workspaces/${this.workspace.workspaceSlug}/projects/${projectId}/`,
       {
-        body: input,
+        body: normalizeProjectInput(input),
       },
     );
   }
@@ -214,7 +214,7 @@ export class PlaneClient {
     return this.request(
       "POST",
       `/api/v1/workspaces/${this.workspace.workspaceSlug}/projects/${projectId}/${resource}/`,
-      { body: input },
+      { body: normalizeResourceInput(input) },
     );
   }
 
@@ -227,7 +227,7 @@ export class PlaneClient {
     return this.request(
       "PATCH",
       `/api/v1/workspaces/${this.workspace.workspaceSlug}/projects/${projectId}/${resource}/${resourceId}/`,
-      { body: input },
+      { body: normalizeResourceInput(input) },
     );
   }
 
@@ -389,10 +389,11 @@ export class PlaneClient {
   }
 
   async createComment(projectId: string, issueId: string, comment: string): Promise<JsonObject> {
+    const normalizedComment = normalizePlaneText(comment);
     return this.request(
       "POST",
       `/api/v1/workspaces/${this.workspace.workspaceSlug}/projects/${projectId}/work-items/${issueId}/comments/`,
-      { body: { comment_html: comment, comment_stripped: comment } },
+      { body: { comment_html: normalizedComment, comment_stripped: normalizedComment } },
     );
   }
 
@@ -402,10 +403,11 @@ export class PlaneClient {
     commentId: string,
     comment: string,
   ): Promise<JsonObject> {
+    const normalizedComment = normalizePlaneText(comment);
     return this.request(
       "PATCH",
       `/api/v1/workspaces/${this.workspace.workspaceSlug}/projects/${projectId}/work-items/${issueId}/comments/${commentId}/`,
-      { body: { comment_html: comment, comment_stripped: comment } },
+      { body: { comment_html: normalizedComment, comment_stripped: normalizedComment } },
     );
   }
 
@@ -557,13 +559,38 @@ function normalizeWorkItemInput(input: JsonObject): JsonObject {
   const output: JsonObject = {};
   for (const [key, value] of Object.entries(input)) {
     if (key === "description" && typeof value === "string") {
-      output.description_html = value;
-      output.description_stripped = value;
+      const description = normalizePlaneText(value);
+      output.description_html = description;
+      output.description_stripped = description;
     } else {
       output[key] = value;
     }
   }
   return dropUndefined(output);
+}
+
+function normalizeProjectInput(input: JsonObject): JsonObject {
+  return normalizeLongFormTextFields(input, ["description"]);
+}
+
+function normalizeResourceInput(input: JsonObject): JsonObject {
+  return normalizeLongFormTextFields(input, ["description"]);
+}
+
+function normalizeLongFormTextFields(input: JsonObject, fields: string[]): JsonObject {
+  const textFields = new Set(fields);
+  return dropUndefined(
+    Object.fromEntries(
+      Object.entries(input).map(([key, value]) => [
+        key,
+        textFields.has(key) && typeof value === "string" ? normalizePlaneText(value) : value,
+      ]),
+    ),
+  );
+}
+
+export function normalizePlaneText(value: string): string {
+  return value.replace(/\\r\\n|\\n|\\r/g, "\n");
 }
 
 export function dropUndefined(input: JsonObject): JsonObject {

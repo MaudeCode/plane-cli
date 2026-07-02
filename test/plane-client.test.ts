@@ -49,6 +49,84 @@ describe("PlaneClient", () => {
     );
   });
 
+  test("decodes escaped newlines in work item descriptions", async () => {
+    const fetch = vi.fn(async () => jsonResponse({ id: "ISSUE-ID", name: "Fix formatting" }));
+    const client = new PlaneClient(workspace, { fetch });
+
+    await client.createWorkItem("PROJECT-ID", {
+      description: "Scope:\\n- First item\\n- Second item",
+      name: "Fix formatting",
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://example.test/api/v1/workspaces/acme/projects/PROJECT-ID/work-items/",
+      expect.objectContaining({
+        body: JSON.stringify({
+          description_html: "Scope:\n- First item\n- Second item",
+          description_stripped: "Scope:\n- First item\n- Second item",
+          name: "Fix formatting",
+        }),
+      }),
+    );
+  });
+
+  test("decodes escaped newlines in project descriptions", async () => {
+    const fetch = vi.fn(async () => jsonResponse({ id: "PROJECT-ID", name: "Web" }));
+    const client = new PlaneClient(workspace, { fetch });
+
+    await client.createProject({
+      description: "Goals:\\r\\n- Ship CLI\\n- Keep JSON stable",
+      name: "Web",
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://example.test/api/v1/workspaces/acme/projects/",
+      expect.objectContaining({
+        body: JSON.stringify({
+          description: "Goals:\n- Ship CLI\n- Keep JSON stable",
+          name: "Web",
+        }),
+      }),
+    );
+  });
+
+  test("decodes escaped newlines in resource descriptions", async () => {
+    const fetch = vi.fn(async () => jsonResponse({ id: "MODULE-ID", name: "Agent work" }));
+    const client = new PlaneClient(workspace, { fetch });
+
+    await client.createResource("PROJECT-ID", "modules", {
+      description: "Scope:\\n- Bugs\\n- Polish",
+      name: "Agent work",
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://example.test/api/v1/workspaces/acme/projects/PROJECT-ID/modules/",
+      expect.objectContaining({
+        body: JSON.stringify({
+          description: "Scope:\n- Bugs\n- Polish",
+          name: "Agent work",
+        }),
+      }),
+    );
+  });
+
+  test("decodes escaped newlines in comments", async () => {
+    const fetch = vi.fn(async () => jsonResponse({ id: "COMMENT-ID" }));
+    const client = new PlaneClient(workspace, { fetch });
+
+    await client.createComment("PROJECT-ID", "ISSUE-ID", "Verified:\\n- Tests pass\\n- Build passes");
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://example.test/api/v1/workspaces/acme/projects/PROJECT-ID/work-items/ISSUE-ID/comments/",
+      expect.objectContaining({
+        body: JSON.stringify({
+          comment_html: "Verified:\n- Tests pass\n- Build passes",
+          comment_stripped: "Verified:\n- Tests pass\n- Build passes",
+        }),
+      }),
+    );
+  });
+
   test("paginates list responses until next_page_results is false", async () => {
     const fetch = vi
       .fn()

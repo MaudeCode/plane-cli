@@ -47,6 +47,10 @@ async function rpc(
   });
 
   expect(res.status).toBe(200);
+  const sessionId = res.headers.get("mcp-session-id");
+  if (sessionId) {
+    headers["mcp-session-id"] = sessionId;
+  }
   const text = await res.text();
   if (res.headers.get("content-type")?.includes("text/event-stream")) {
     const dataLine = text
@@ -65,7 +69,16 @@ describe("Plane MCP server", () => {
     const { tools } = await client.listTools();
     const names = tools.map((tool) => tool.name);
 
-    expect(names).toEqual(expect.arrayContaining(["issue_get", "project_list", "comment_create"]));
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "issue_get",
+        "plane_context_clear",
+        "plane_context_get",
+        "plane_context_set",
+        "project_list",
+        "comment_create",
+      ]),
+    );
     expect(names).not.toContain("plane_tool_call");
     expect(tools.find((tool) => tool.name === "project_list")).toMatchObject({
       annotations: { destructiveHint: false, readOnlyHint: true },
@@ -98,13 +111,14 @@ describe("Plane MCP server", () => {
   test("serves typed tools over Streamable HTTP", async () => {
     const server = await startPlaneMcpHttpServer({ env: {}, host: "127.0.0.1", port: 0 });
     try {
+      const headers: Record<string, string> = {};
       await rpc(server.url, "initialize", {
         capabilities: {},
         clientInfo: { name: "raw-json-rpc-test", version: "0.0.0" },
         protocolVersion: "2025-06-18",
-      });
+      }, headers);
 
-      const listResponse = (await rpc(server.url, "tools/list")) as {
+      const listResponse = (await rpc(server.url, "tools/list", undefined, headers)) as {
         result: { tools: Array<{ inputSchema: unknown; name: string }> };
       };
       const names = listResponse.result.tools.map((tool) => tool.name);
@@ -121,6 +135,9 @@ describe("Plane MCP server", () => {
           type: "object",
         },
       });
+      const issueGetSchema = listResponse.result.tools.find((tool) => tool.name === "issue_get")
+        ?.inputSchema as { required?: string[] };
+      expect(issueGetSchema.required ?? []).not.toContain("project");
     } finally {
       await server.close();
     }
@@ -153,6 +170,7 @@ describe("Plane MCP server", () => {
       });
       expect(unauthorized.status).toBe(401);
 
+      const headers = { authorization: "Bearer mcp-secret" };
       await rpc(
         server.url,
         "initialize",
@@ -161,13 +179,13 @@ describe("Plane MCP server", () => {
           clientInfo: { name: "auth-test", version: "0.0.0" },
           protocolVersion: "2025-06-18",
         },
-        { authorization: "Bearer mcp-secret" },
+        headers,
       );
       const listResponse = (await rpc(
         server.url,
         "tools/list",
         undefined,
-        { authorization: "Bearer mcp-secret" },
+        headers,
       )) as { result: { tools: Array<{ name: string }> } };
       expect(listResponse.result.tools.some((tool) => tool.name === "issue_get")).toBe(true);
     } finally {
@@ -202,13 +220,12 @@ describe("Plane MCP server", () => {
     });
   });
 
-  test("honors repo project hints through MCP execution", async () => {
+  test("uses session context for repo-scoped MCP execution", async () => {
     const cwd = await tempDir();
     await writeFile(
       join(cwd, ".plane-cli.yaml"),
       "defaultWorkspace: prod\nworkspaces:\n  prod:\n    workspaceSlug: acme\n    apiKey: plane_api_secret\n",
     );
-    await writeFile(join(cwd, ".plane-cli-workspace"), "workspace: prod\nproject: Web\n");
     const fetch = vi
       .fn()
       .mockResolvedValueOnce(
@@ -220,6 +237,10 @@ describe("Plane MCP server", () => {
       .mockResolvedValueOnce(response({ id: "ISSUE-ID", name: "Fix login", sequence_id: 123 }));
     const client = await connectClient(createPlaneMcpServer({ cwd, env: {}, fetch, home: cwd }));
 
+    await client.callTool({
+      arguments: { project: "Web", workspace: "prod" },
+      name: "plane_context_set",
+    });
     const result = await client.callTool({
       arguments: { title: "Fix login" },
       name: "issue_create",
@@ -233,6 +254,52 @@ describe("Plane MCP server", () => {
     expect(fetch.mock.calls[1]?.[0]).toBe(
       "https://api.plane.so/api/v1/workspaces/acme/projects/PROJECT-ID/work-items/",
     );
+  });
+
+  test("persists session context over Streamable HTTP", async () => {
+    const cwd = await tempDir();
+    await writeFile(
+      join(cwd, ".plane-cli.yaml"),
+      "defaultWorkspace: prod\nworkspaces:\n  prod:\n    workspaceSlug: acme\n    apiKey: plane_api_secret\n",
+    );
+    const fetch = vi.fn(async () =>
+      response({ next_page_results: false, results: [{ id: "PROJECT-ID", name: "Web" }] }),
+    );
+    const server = await startPlaneMcpHttpServer({
+      cwd,
+      env: {},
+      fetch,
+      home: cwd,
+      host: "127.0.0.1",
+      port: 0,
+    });
+    try {
+      const client = new Client({ name: "http-context-test", version: "0.0.0" });
+      const { StreamableHTTPClientTransport } = await import(
+        "@modelcontextprotocol/sdk/client/streamableHttp.js"
+      );
+      await client.connect(new StreamableHTTPClientTransport(new URL(server.url)));
+
+      await client.callTool({
+        arguments: { project: "Web", workspace: "prod" },
+        name: "plane_context_set",
+      });
+      const context = await client.callTool({ arguments: {}, name: "plane_context_get" });
+      const projects = await client.callTool({ arguments: {}, name: "project_list" });
+
+      expect(context.structuredContent).toEqual({
+        data: { project: "Web", workspace: "prod" },
+        ok: true,
+      });
+      expect(projects.structuredContent).toEqual({
+        data: [{ id: "PROJECT-ID", name: "Web" }],
+        ok: true,
+        workspace: "prod",
+      });
+      await client.close();
+    } finally {
+      await server.close();
+    }
   });
 
   test("returns structured sanitized errors from tool calls", async () => {

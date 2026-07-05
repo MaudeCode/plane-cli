@@ -1681,7 +1681,7 @@ async function getProjectForLookup(
 ): Promise<JsonObject> {
   if (!lookup) {
     throw new ValidationAppError("Project is required for this command.", {
-      hint: "Pass --project <name-or-id> or set project in .plane-cli-workspace.",
+      hint: "Pass --project <name-or-id>, set project in .plane-cli-workspace, or call plane_context_set in MCP.",
     });
   }
   return resolveProject(client, lookup);

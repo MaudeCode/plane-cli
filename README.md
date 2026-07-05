@@ -210,7 +210,7 @@ Build and run locally:
 
 ```bash
 bun run build
-PORT=3000 PLANE_CLI_HOME="$HOME" PLANE_CLI_CWD="$PWD" node dist/mcp/index.js
+PORT=3000 PLANE_CLI_HOME="$HOME" node dist/mcp/index.js
 ```
 
 Connect MCP clients to:
@@ -226,16 +226,31 @@ docker build -t plane-cli-mcp .
 docker run --rm -p 3000:3000 \
   -e PLANE_MCP_AUTH_TOKEN="$PLANE_MCP_AUTH_TOKEN" \
   -v "$HOME/.config/plane-cli:/data/.config/plane-cli:ro" \
-  -v "$PWD:/workspace:ro" \
   plane-cli-mcp
 ```
 
 The container runs only the hosted MCP server. It reads Plane configuration the
-same way as the CLI, with `PLANE_CLI_HOME` defaulting to `/data` and
-`PLANE_CLI_CWD` defaulting to `/workspace`, so mounted `.plane-cli-workspace`
-files continue to provide workspace/project hints. Deployment-specific secret
-injection should happen through ordinary environment variables or mounted config
-files.
+same way as the CLI, with `PLANE_CLI_HOME` defaulting to `/data`.
+Deployment-specific secret injection should happen through ordinary environment
+variables or mounted config files.
+
+For repository-specific routing, keep `.plane-cli-workspace` local to the agent
+checkout. The hosted MCP server does not need repo mounts and does not maintain a
+workspace mapping. Agents should read the local file once and call:
+
+```json
+{
+  "tool": "plane_context_set",
+  "arguments": {
+    "workspace": "MaudeCode",
+    "project": "Plane CLI"
+  }
+}
+```
+
+That stores workspace/project defaults only for the current MCP session.
+Subsequent typed tools use that session context when `workspace` or `project` is
+omitted. Explicit tool arguments still win.
 
 Public binds require `PLANE_MCP_AUTH_TOKEN`; MCP clients must send it as:
 

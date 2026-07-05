@@ -5,7 +5,13 @@ import type { CommandFlagSpec, CommandSpec, PrimitiveFlagType } from "../command
 import { flagToMcpName } from "../commands/registry.js";
 import { jsonError, jsonSuccess } from "../lib/output.js";
 
+export type PlaneMcpSessionContext = {
+  project?: string;
+  workspace?: string;
+};
+
 export type PlaneMcpServerOptions = CliDeps & {
+  context?: PlaneMcpSessionContext;
   name?: string;
   version?: string;
 };
@@ -13,15 +19,67 @@ export type PlaneMcpServerOptions = CliDeps & {
 type InputShape = Record<string, ZodTypeAny>;
 
 const instructions =
-  "Plane MCP exposes typed Plane tools generated from plane-cli. Use typed tools directly; Plane permissions are determined by the configured Plane token/app installation.";
+  "Plane MCP exposes typed Plane tools generated from plane-cli. Before Plane work in a local repository, read the local .plane-cli-workspace file and call plane_context_set once with its workspace and optional project. Tool calls then default to that MCP session context. Explicit tool arguments still win. Plane permissions are determined by the configured Plane token/app installation.";
 
 export function createPlaneMcpServer(options: PlaneMcpServerOptions = {}): McpServer {
+  const context = options.context ?? {};
   const server = new McpServer(
     {
       name: options.name ?? "plane-cli",
       version: options.version ?? "0.1.0",
     },
     { instructions },
+  );
+
+  server.registerTool(
+    "plane_context_set",
+    {
+      annotations: {
+        destructiveHint: false,
+        readOnlyHint: false,
+      },
+      description:
+        "Set the Plane workspace/project context for this MCP session. Read local .plane-cli-workspace and call this once before repo-scoped Plane work.",
+      inputSchema: {
+        project: z.string().describe("Plane project name, identifier, or id.").optional(),
+        workspace: z.string().describe("Local plane-cli workspace name.").min(1),
+      },
+    },
+    async (input) => {
+      context.workspace = input.workspace;
+      context.project = optionalString(input.project);
+      return contextResult(context);
+    },
+  );
+
+  server.registerTool(
+    "plane_context_get",
+    {
+      annotations: {
+        destructiveHint: false,
+        readOnlyHint: true,
+      },
+      description: "Get the current Plane workspace/project context for this MCP session.",
+      inputSchema: {},
+    },
+    async () => contextResult(context),
+  );
+
+  server.registerTool(
+    "plane_context_clear",
+    {
+      annotations: {
+        destructiveHint: false,
+        readOnlyHint: false,
+      },
+      description: "Clear the Plane workspace/project context for this MCP session.",
+      inputSchema: {},
+    },
+    async () => {
+      delete context.workspace;
+      delete context.project;
+      return contextResult(context);
+    },
   );
 
   for (const spec of commandSpecs) {
@@ -37,7 +95,11 @@ export function createPlaneMcpServer(options: PlaneMcpServerOptions = {}): McpSe
       },
       async (input) => {
         try {
-          const result = await runMcpCommand(spec.mcpName, input as Record<string, unknown>, options);
+          const result = await runMcpCommand(
+            spec.mcpName,
+            applySessionContext(spec, input as Record<string, unknown>, context),
+            options,
+          );
           const workspace = result.workspace?.name;
           const structuredContent = workspace
             ? { ok: true, workspace, data: result.data }
@@ -64,6 +126,51 @@ export function createPlaneMcpServer(options: PlaneMcpServerOptions = {}): McpSe
   return server;
 }
 
+function contextResult(context: PlaneMcpSessionContext) {
+  const data = {
+    ...(context.workspace ? { workspace: context.workspace } : {}),
+    ...(context.project ? { project: context.project } : {}),
+  };
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify({ ok: true, data }) }],
+    structuredContent: { ok: true, data },
+  };
+}
+
+function optionalString(value: string | undefined): string | undefined {
+  return value && value.trim().length > 0 ? value : undefined;
+}
+
+function applySessionContext(
+  spec: CommandSpec<unknown>,
+  input: Record<string, unknown>,
+  context: PlaneMcpSessionContext,
+): Record<string, unknown> {
+  const resolvedInput = { ...input };
+
+  if (
+    spec.category !== "auth" &&
+    context.workspace &&
+    isMissingInputValue(resolvedInput.workspace)
+  ) {
+    resolvedInput.workspace = context.workspace;
+  }
+
+  if (context.project && specHasMcpFlag(spec, "project") && isMissingInputValue(resolvedInput.project)) {
+    resolvedInput.project = context.project;
+  }
+
+  return resolvedInput;
+}
+
+function isMissingInputValue(value: unknown): boolean {
+  return value === undefined || value === null || (typeof value === "string" && value.trim() === "");
+}
+
+function specHasMcpFlag(spec: Pick<CommandSpec<unknown>, "flags">, propertyName: string): boolean {
+  return (spec.flags ?? []).some((flag) => flagMcpPropertyName(flag) === propertyName);
+}
+
 function zodShapeForSpec(spec: Pick<CommandSpec<unknown>, "args" | "flags">): InputShape {
   const shape: InputShape = {};
 
@@ -79,7 +186,7 @@ function zodShapeForSpec(spec: Pick<CommandSpec<unknown>, "args" | "flags">): In
   for (const flag of spec.flags ?? []) {
     const propertyName = flagMcpPropertyName(flag);
     const schema = zodForFlagType(flag.type).describe(flag.description);
-    shape[propertyName] = flag.required ? schema : schema.optional();
+    shape[propertyName] = flag.required && propertyName !== "project" ? schema : schema.optional();
   }
 
   return shape;

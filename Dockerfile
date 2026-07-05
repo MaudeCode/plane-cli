@@ -16,13 +16,12 @@ WORKDIR /app
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=3000 \
-    PLANE_CLI_HOME=/data \
-    PLANE_CLI_CWD=/workspace
+    PLANE_CLI_HOME=/data
 
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production \
-    && mkdir -p /data /workspace \
-    && chown -R bun:bun /app /data /workspace
+    && mkdir -p /data \
+    && chown -R bun:bun /app /data
 
 COPY --from=build --chown=bun:bun /app/dist ./dist
 

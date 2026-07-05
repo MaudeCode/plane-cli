@@ -200,6 +200,30 @@ Error JSON output:
 }
 ```
 
+## Hosted MCP Server
+
+The hosted MCP server exposes every CLI command as a typed MCP tool over
+Streamable HTTP. Codex and Hermes can defer or search tools client-side; the
+server still returns the full typed Plane tool catalog from `tools/list`.
+
+Build and run locally:
+
+```bash
+bun run build
+PORT=3000 PLANE_CLI_HOME="$HOME" PLANE_CLI_CWD="$PWD" node dist/mcp/index.js
+```
+
+Connect MCP clients to:
+
+```text
+http://localhost:3000/mcp
+```
+
+Credentials come from mounted normal `plane-cli` config files or environment
+variables only. There is no external secret store integration. Separate clients
+should use separate deployments, config files, or environment sets so workspace
+context and credentials stay isolated.
+
 ## Commands
 
 ```text

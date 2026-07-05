@@ -7,7 +7,7 @@ import {
   mcpInputToArgv,
   mcpNameToFlagName,
 } from "../src/commands/registry.js";
-import { commandSpecs } from "../src/cli.js";
+import { commandSpecs, normalizeCommandWordsForTest } from "../src/cli.js";
 
 describe("command registry helpers", () => {
   test("keeps MCP tool names stable for hyphenated commands", () => {
@@ -215,6 +215,24 @@ describe("CLI command specs", () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
+  test("uses unique normalized CLI command and alias keys across commands", () => {
+    const normalizedOwners = new Map<string, Set<string>>();
+    for (const spec of commandSpecs) {
+      for (const words of [spec.words, ...(spec.aliases ?? [])]) {
+        const key = commandKey(normalizeCommandWordsForTest(words));
+        const owners = normalizedOwners.get(key) ?? new Set<string>();
+        owners.add(spec.mcpName);
+        normalizedOwners.set(key, owners);
+      }
+    }
+
+    expect(
+      [...normalizedOwners.entries()]
+        .filter(([, owners]) => owners.size > 1)
+        .map(([key, owners]) => ({ key, owners: [...owners].sort() })),
+    ).toEqual([]);
+  });
+
   test("defines required metadata for every command", () => {
     for (const spec of commandSpecs) {
       expect(spec.words.length).toBeGreaterThan(0);
@@ -269,5 +287,17 @@ describe("CLI command specs", () => {
         "state_delete",
       ].sort(),
     );
+  });
+
+  test("marks destructive commands with a required boolean confirm flag", () => {
+    for (const spec of commandSpecs.filter((candidate) => candidate.destructive)) {
+      expect(spec.flags).toContainEqual(
+        expect.objectContaining({
+          name: "confirm",
+          required: true,
+          type: "boolean",
+        }),
+      );
+    }
   });
 });

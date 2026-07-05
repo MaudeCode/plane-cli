@@ -864,6 +864,10 @@ function alias(value: string): string {
   return aliases[value] ?? value;
 }
 
+export function normalizeCommandWordsForTest(words: string[]): string[] {
+  return words.map((word) => alias(word));
+}
+
 async function authApiKey(context: CommandContext): Promise<CommandResult> {
   const workspace = requiredFlag(context, "workspace");
   const apiKey = requiredFlag(context, "api-key");

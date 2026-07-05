@@ -7,6 +7,7 @@ import {
   mcpInputToArgv,
   mcpNameToFlagName,
 } from "../src/commands/registry.js";
+import { commandSpecs } from "../src/cli.js";
 
 describe("command registry helpers", () => {
   test("keeps MCP tool names stable for hyphenated commands", () => {
@@ -131,7 +132,14 @@ describe("command registry helpers", () => {
   test("uses custom mcp names for input properties and original CLI flag names in argv", () => {
     const argv = mcpInputToArgv(
       {
-        flags: [{ description: "Workspace slug", mcpName: "workspaceSlug", name: "workspace-slug", type: "string" }],
+        flags: [
+          {
+            description: "Workspace slug",
+            mcpName: "workspaceSlug",
+            name: "workspace-slug",
+            type: "string",
+          },
+        ],
         words: ["auth", "api-key"],
       },
       {
@@ -140,5 +148,56 @@ describe("command registry helpers", () => {
     );
 
     expect(argv).toEqual(["auth", "api-key", "--workspace-slug", "engineering", "--json"]);
+  });
+});
+
+describe("CLI command specs", () => {
+  test("uses unique MCP tool names", () => {
+    const names = commandSpecs.map((spec) => spec.mcpName);
+
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  test("defines required metadata for every command", () => {
+    for (const spec of commandSpecs) {
+      expect(spec.words.length).toBeGreaterThan(0);
+      expect(spec.usage).not.toBe("");
+      expect(spec.description).not.toBe("");
+      expect(spec.mcpName).toMatch(/^[a-z][a-z0-9_]*$/);
+    }
+  });
+
+  test("includes core command tools", () => {
+    expect(commandSpecs.map((spec) => spec.mcpName)).toEqual(
+      expect.arrayContaining([
+        "issue_search",
+        "issue_get",
+        "issue_create",
+        "issue_update",
+        "project_list",
+        "project_get",
+        "comment_create",
+        "cycle_list",
+        "module_add_item",
+      ]),
+    );
+  });
+
+  test("keeps work-item as CLI aliases instead of separate MCP tools", () => {
+    expect(commandSpecs.some((spec) => spec.mcpName.startsWith("work_item_"))).toBe(false);
+    expect(commandSpecs.find((spec) => spec.mcpName === "issue_get")?.aliases).toContainEqual([
+      "work-item",
+      "get",
+    ]);
+  });
+
+  test("marks known destructive commands", () => {
+    const destructiveNames = commandSpecs
+      .filter((spec) => spec.destructive)
+      .map((spec) => spec.mcpName);
+
+    expect(destructiveNames).toEqual(
+      expect.arrayContaining(["issue_delete", "project_delete", "comment_delete"]),
+    );
   });
 });

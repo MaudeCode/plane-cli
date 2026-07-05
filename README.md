@@ -219,6 +219,23 @@ Connect MCP clients to:
 http://localhost:3000/mcp
 ```
 
+Docker image:
+
+```bash
+docker build -t plane-cli-mcp .
+docker run --rm -p 3000:3000 \
+  -v "$HOME/.config/plane-cli:/data/.config/plane-cli:ro" \
+  -v "$PWD:/workspace:ro" \
+  plane-cli-mcp
+```
+
+The container runs only the hosted MCP server. It reads Plane configuration the
+same way as the CLI, with `PLANE_CLI_HOME` defaulting to `/data` and
+`PLANE_CLI_CWD` defaulting to `/workspace`, so mounted `.plane-cli-workspace`
+files continue to provide workspace/project hints. Deployment-specific secret
+injection should happen through ordinary environment variables or mounted config
+files.
+
 Credentials come from mounted normal `plane-cli` config files or environment
 variables only. There is no external secret store integration. Separate clients
 should use separate deployments, config files, or environment sets so workspace

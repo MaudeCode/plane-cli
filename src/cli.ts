@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { createServer } from "node:http";
-import { basename } from "node:path";
+import { basename, isAbsolute, relative, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
@@ -48,6 +48,8 @@ type ParsedArgv = {
   flags: Record<string, string | boolean | string[]>;
   positionals: string[];
 };
+
+const mcpFileFlags = new Set(["description-file", "file", "filters-file"]);
 
 export type CommandContext = {
   argv: string[];
@@ -807,6 +809,7 @@ export async function runMcpCommand(
   }
   const argv = mcpInputToArgv(spec, input);
   const parsed = mcpInputToContextInput(spec, input);
+  constrainMcpFileFlags(parsed.flags, deps.cwd);
   const context: CommandContext = {
     argv,
     cwd: deps.cwd,
@@ -818,6 +821,32 @@ export async function runMcpCommand(
     positionals: parsed.positionals,
   };
   return spec.handler(context);
+}
+
+function constrainMcpFileFlags(
+  flags: Record<string, string | boolean | string[]>,
+  cwd = process.cwd(),
+): void {
+  const root = resolve(cwd);
+
+  for (const flagName of mcpFileFlags) {
+    const value = flags[flagName];
+    if (typeof value !== "string") continue;
+
+    const filePath = resolve(root, value);
+    if (!isInsidePath(root, filePath)) {
+      throw new ValidationAppError(
+        `MCP file flag --${flagName} must resolve inside the configured workspace root.`,
+        { flag: flagName },
+      );
+    }
+    flags[flagName] = filePath;
+  }
+}
+
+function isInsidePath(parent: string, child: string): boolean {
+  const path = relative(parent, child);
+  return path === "" || (path.length > 0 && !path.startsWith("..") && !isAbsolute(path));
 }
 
 function parseArgv(argv: string[]): ParsedArgv {

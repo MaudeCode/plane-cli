@@ -25,7 +25,12 @@ async function connectClient(server = createPlaneMcpServer({ env: {} })): Promis
   return client;
 }
 
-async function rpc(url: string, method: string, params?: unknown): Promise<unknown> {
+async function rpc(
+  url: string,
+  method: string,
+  params?: unknown,
+  headers: Record<string, string> = {},
+): Promise<unknown> {
   const res = await fetch(url, {
     body: JSON.stringify({
       id: crypto.randomUUID(),
@@ -36,6 +41,7 @@ async function rpc(url: string, method: string, params?: unknown): Promise<unkno
     headers: {
       accept: "application/json, text/event-stream",
       "content-type": "application/json",
+      ...headers,
     },
     method: "POST",
   });
@@ -120,6 +126,52 @@ describe("Plane MCP server", () => {
     }
   });
 
+  test("requires an auth token for public hosted binds", async () => {
+    await expect(
+      startPlaneMcpHttpServer({ env: {}, host: "0.0.0.0", port: 0 }),
+    ).rejects.toThrow("PLANE_MCP_AUTH_TOKEN is required");
+  });
+
+  test("enforces bearer auth when configured", async () => {
+    const server = await startPlaneMcpHttpServer({
+      authToken: "mcp-secret",
+      env: {},
+      host: "127.0.0.1",
+      port: 0,
+    });
+    try {
+      const unauthorized = await fetch(server.url, {
+        body: JSON.stringify({ id: "1", jsonrpc: "2.0", method: "tools/list" }),
+        headers: {
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+      expect(unauthorized.status).toBe(401);
+
+      await rpc(
+        server.url,
+        "initialize",
+        {
+          capabilities: {},
+          clientInfo: { name: "auth-test", version: "0.0.0" },
+          protocolVersion: "2025-06-18",
+        },
+        { authorization: "Bearer mcp-secret" },
+      );
+      const listResponse = (await rpc(
+        server.url,
+        "tools/list",
+        undefined,
+        { authorization: "Bearer mcp-secret" },
+      )) as { result: { tools: Array<{ name: string }> } };
+      expect(listResponse.result.tools.some((tool) => tool.name === "issue_get")).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+
   test("returns structured success content from tool calls", async () => {
     const cwd = await tempDir();
     await writeFile(
@@ -198,5 +250,34 @@ describe("Plane MCP server", () => {
       ok: false,
     });
     expect(JSON.stringify(result.structuredContent)).not.toMatch(/api[_-]?key|secret|token/i);
+  });
+
+  test("denies MCP file flags outside the configured workspace root", async () => {
+    const cwd = await tempDir();
+    const outside = await tempDir();
+    const filtersPath = join(outside, "filters.json");
+    await writeFile(filtersPath, "{}");
+    await writeFile(
+      join(cwd, ".plane-cli.yaml"),
+      "defaultWorkspace: prod\nworkspaces:\n  prod:\n    workspaceSlug: acme\n    apiKey: plane_api_secret\n",
+    );
+    const fetch = vi.fn();
+    const client = await connectClient(createPlaneMcpServer({ cwd, env: {}, fetch, home: cwd }));
+
+    const result = await client.callTool({
+      arguments: { filters_file: filtersPath, workspace: "prod" },
+      name: "issue_advanced_search",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: "VALIDATION_ERROR",
+        details: { flag: "filters-file" },
+        message: "MCP file flag --filters-file must resolve inside the configured workspace root.",
+      },
+      ok: false,
+    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

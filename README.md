@@ -224,6 +224,7 @@ Docker image:
 ```bash
 docker build -t plane-cli-mcp .
 docker run --rm -p 3000:3000 \
+  -e PLANE_MCP_AUTH_TOKEN="$PLANE_MCP_AUTH_TOKEN" \
   -v "$HOME/.config/plane-cli:/data/.config/plane-cli:ro" \
   -v "$PWD:/workspace:ro" \
   plane-cli-mcp
@@ -235,6 +236,16 @@ same way as the CLI, with `PLANE_CLI_HOME` defaulting to `/data` and
 files continue to provide workspace/project hints. Deployment-specific secret
 injection should happen through ordinary environment variables or mounted config
 files.
+
+Public binds require `PLANE_MCP_AUTH_TOKEN`; MCP clients must send it as:
+
+```text
+Authorization: Bearer <token>
+```
+
+Localhost development can run without the token. Set
+`PLANE_MCP_ALLOW_UNAUTHENTICATED=true` only when another layer already restricts
+access to the endpoint.
 
 Credentials come from mounted normal `plane-cli` config files or environment
 variables only. There is no external secret store integration. Separate clients

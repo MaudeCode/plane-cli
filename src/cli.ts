@@ -26,7 +26,7 @@ import {
   resolveProject,
 } from "./lib/plane-client.js";
 import { buildPlaneOAuthAuthorizeUrl, exchangePlaneOAuthToken } from "./lib/plane-oauth.js";
-import { type CommandSpec, commandKey, defaultMcpName } from "./commands/registry.js";
+import { type CommandSpec, commandKey, defaultMcpName, mcpInputToArgv } from "./commands/registry.js";
 
 export type CliDeps = ConfigLoadOptions & {
   fetch?: FetchLike;
@@ -786,6 +786,32 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<CliRes
     const appError = toAppError(error);
     return { exitCode: appError.exitCode, stderr: `${appError.message}\n`, stdout: "" };
   }
+}
+
+export async function runMcpCommand(
+  mcpName: string,
+  input: Record<string, unknown>,
+  deps: CliDeps = {},
+): Promise<CommandResult> {
+  const spec = commandSpecs.find((candidate) => candidate.mcpName === mcpName);
+  if (!spec) {
+    throw new ValidationAppError(`Unknown MCP tool: ${mcpName}`, {
+      tools: commandSpecs.map((candidate) => candidate.mcpName),
+    });
+  }
+  const argv = mcpInputToArgv(spec, input);
+  const parsed = parseArgv(argv);
+  const context: CommandContext = {
+    argv,
+    cwd: deps.cwd,
+    env: deps.env ?? process.env,
+    fetch: deps.fetch,
+    flags: parsed.flags,
+    home: deps.home,
+    json: true,
+    positionals: parsed.positionals.slice(spec.words.length),
+  };
+  return spec.handler(context);
 }
 
 function parseArgv(argv: string[]): ParsedArgv {

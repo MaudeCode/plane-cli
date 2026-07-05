@@ -1,4 +1,7 @@
-import { describe, expect, test } from "vitest";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, test, vi } from "vitest";
 import {
   buildMcpInputSchema,
   commandKey,
@@ -7,7 +10,18 @@ import {
   mcpInputToArgv,
   mcpNameToFlagName,
 } from "../src/commands/registry.js";
-import { commandSpecs, normalizeCommandWordsForTest } from "../src/cli.js";
+import { commandSpecs, normalizeCommandWordsForTest, runMcpCommand } from "../src/cli.js";
+
+async function tempDir(): Promise<string> {
+  return mkdtemp(join(tmpdir(), "plane-cli-command-registry-test-"));
+}
+
+function response(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    headers: { "content-type": "application/json" },
+    status,
+  });
+}
 
 describe("command registry helpers", () => {
   test("keeps MCP tool names stable for hyphenated commands", () => {
@@ -299,5 +313,112 @@ describe("CLI command specs", () => {
         }),
       );
     }
+  });
+});
+
+describe("runMcpCommand", () => {
+  test("returns structured CommandResult data and workspace for project list", async () => {
+    const cwd = await tempDir();
+    await writeFile(
+      join(cwd, ".plane-cli.yaml"),
+      "defaultWorkspace: prod\nworkspaces:\n  prod:\n    workspaceSlug: acme\n    apiKey: plane_api_secret\n",
+    );
+    const fetch = vi.fn(async () =>
+      response({ next_page_results: false, results: [{ id: "P1", name: "Web" }] }),
+    );
+
+    const result = await runMcpCommand("project_list", {}, {
+      cwd,
+      env: {},
+      fetch,
+      home: cwd,
+    });
+
+    expect(result).toEqual({
+      data: [{ id: "P1", name: "Web" }],
+      workspace: expect.objectContaining({ name: "prod", workspaceSlug: "acme" }),
+    });
+  });
+
+  test("converts typed comment_create input into issue lookup and comment creation", async () => {
+    const cwd = await tempDir();
+    await writeFile(
+      join(cwd, ".plane-cli.yaml"),
+      "defaultWorkspace: prod\nworkspaces:\n  prod:\n    workspaceSlug: acme\n    apiKey: plane_api_secret\n",
+    );
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response({
+          next_page_results: false,
+          results: [{ id: "PROJECT-ID", identifier: "WEB", name: "Web" }],
+        }),
+      )
+      .mockResolvedValueOnce(response({ id: "ISSUE-ID", identifier: "WEB-123" }))
+      .mockResolvedValueOnce(response({ id: "COMMENT-ID", comment_html: "<p>Ship it</p>" }));
+
+    const result = await runMcpCommand(
+      "comment_create",
+      { body: "Ship it", issue: "WEB-123", project: "Web" },
+      {
+        cwd,
+        env: {},
+        fetch,
+        home: cwd,
+      },
+    );
+
+    expect(result).toEqual({
+      data: { comment_html: "<p>Ship it</p>", id: "COMMENT-ID" },
+      workspace: expect.objectContaining({ name: "prod", workspaceSlug: "acme" }),
+    });
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      "https://api.plane.so/api/v1/workspaces/acme/projects/?per_page=100",
+      "https://api.plane.so/api/v1/workspaces/acme/work-items/WEB-123/",
+      "https://api.plane.so/api/v1/workspaces/acme/projects/PROJECT-ID/work-items/ISSUE-ID/comments/",
+    ]);
+    expect(fetch.mock.calls[2]?.[1]).toMatchObject({
+      body: JSON.stringify({ comment_html: "Ship it", comment_stripped: "Ship it" }),
+      method: "POST",
+    });
+  });
+
+  test("rejects unknown MCP tool names with validation details", async () => {
+    await expect(runMcpCommand("nope", {}, { env: {} })).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+      details: {
+        tools: expect.arrayContaining(["project_list", "comment_create", "auth_api_key"]),
+      },
+      message: "Unknown MCP tool: nope",
+    });
+  });
+
+  test("uses explicit workspace input once for auth_api_key and saves config", async () => {
+    const home = await tempDir();
+    const fetch = vi.fn();
+
+    const result = await runMcpCommand(
+      "auth_api_key",
+      {
+        api_key: "secret",
+        base_url: "https://plane.example.com",
+        workspace: "zoo",
+        workspace_slug: "engineering",
+      },
+      {
+        env: {},
+        fetch,
+        home,
+      },
+    );
+
+    expect(result.data).toMatchObject({
+      workspace: { name: "zoo", workspaceSlug: "engineering" },
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    const saved = await readFile(join(home, ".config", "plane-cli", "config.yaml"), "utf8");
+    expect(saved).toContain("defaultWorkspace: zoo");
+    expect(saved).toContain("workspaceSlug: engineering");
+    expect(saved).toContain("apiKey: secret");
   });
 });

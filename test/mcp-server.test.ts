@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -129,6 +129,9 @@ describe("Plane MCP server", () => {
   test("requires an auth token for public hosted binds", async () => {
     await expect(
       startPlaneMcpHttpServer({ env: {}, host: "0.0.0.0", port: 0 }),
+    ).rejects.toThrow("PLANE_MCP_AUTH_TOKEN is required");
+    await expect(
+      startPlaneMcpHttpServer({ env: {}, host: "203.0.113.10", port: 0 }),
     ).rejects.toThrow("PLANE_MCP_AUTH_TOKEN is required");
   });
 
@@ -266,6 +269,37 @@ describe("Plane MCP server", () => {
 
     const result = await client.callTool({
       arguments: { filters_file: filtersPath, workspace: "prod" },
+      name: "issue_advanced_search",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: "VALIDATION_ERROR",
+        details: { flag: "filters-file" },
+        message: "MCP file flag --filters-file must resolve inside the configured workspace root.",
+      },
+      ok: false,
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  test("denies MCP file flags that escape through workspace symlinks", async () => {
+    const cwd = await tempDir();
+    const outside = await tempDir();
+    const filtersPath = join(outside, "filters.json");
+    const linkPath = join(cwd, "filters-link.json");
+    await writeFile(filtersPath, "{}");
+    await symlink(filtersPath, linkPath);
+    await writeFile(
+      join(cwd, ".plane-cli.yaml"),
+      "defaultWorkspace: prod\nworkspaces:\n  prod:\n    workspaceSlug: acme\n    apiKey: plane_api_secret\n",
+    );
+    const fetch = vi.fn();
+    const client = await connectClient(createPlaneMcpServer({ cwd, env: {}, fetch, home: cwd }));
+
+    const result = await client.callTool({
+      arguments: { filters_file: "filters-link.json", workspace: "prod" },
       name: "issue_advanced_search",
     });
 

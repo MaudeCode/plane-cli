@@ -80,7 +80,12 @@ function nonEmpty(value: string | undefined): string | undefined {
 }
 
 function isPublicHost(host: string): boolean {
-  return host === "0.0.0.0" || host === "::" || host === "";
+  return !(
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host === "localhost" ||
+    host.endsWith(".localhost")
+  );
 }
 
 function hasBearerToken(req: IncomingMessage, expectedToken: string): boolean {

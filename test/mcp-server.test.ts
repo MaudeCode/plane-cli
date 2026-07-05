@@ -72,6 +72,21 @@ describe("Plane MCP server", () => {
     expect(tools.find((tool) => tool.name === "comment_create")).toMatchObject({
       annotations: { destructiveHint: false, readOnlyHint: false },
     });
+    expect(tools.find((tool) => tool.name === "workspace_validate")).toMatchObject({
+      annotations: { destructiveHint: false, readOnlyHint: true },
+    });
+    expect(tools.find((tool) => tool.name === "issue_advanced_search")).toMatchObject({
+      annotations: { destructiveHint: false, readOnlyHint: true },
+    });
+    expect(tools.find((tool) => tool.name === "project_unarchive")).toMatchObject({
+      annotations: { destructiveHint: false, readOnlyHint: false },
+    });
+    expect(tools.find((tool) => tool.name === "module_add_item")).toMatchObject({
+      annotations: { destructiveHint: false, readOnlyHint: false },
+    });
+    expect(tools.find((tool) => tool.name === "issue_attachment_upload")).toMatchObject({
+      annotations: { destructiveHint: false, readOnlyHint: false },
+    });
   });
 
   test("serves typed tools over Streamable HTTP", async () => {

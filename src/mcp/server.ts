@@ -112,12 +112,19 @@ function isReadOnlyCommand(spec: Pick<CommandSpec<unknown>, "destructive" | "wor
   if (spec.destructive) return false;
 
   const action = spec.words.at(-1);
-  return (
-    action === "get" ||
-    action === "items" ||
-    action === "list" ||
-    action === "search" ||
-    action === "show" ||
-    action === "type-schema"
+  return !(
+    action === "add-item" ||
+    action === "api-key" ||
+    action === "archive" ||
+    action === "bot" ||
+    action === "code" ||
+    action === "complete" ||
+    action === "create" ||
+    action === "login" ||
+    action === "remove-item" ||
+    action === "request-upload" ||
+    action === "unarchive" ||
+    action === "update" ||
+    action === "upload"
   );
 }

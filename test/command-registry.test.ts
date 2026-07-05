@@ -80,6 +80,54 @@ describe("command registry helpers", () => {
     ]);
   });
 
+  test("prepends generic workspace when a command has no explicit workspace flag", () => {
+    const argv = mcpInputToArgv(
+      {
+        flags: [{ description: "Project", name: "project", type: "string", required: true }],
+        words: ["project", "list"],
+      },
+      {
+        project: "WEB",
+        workspace: "prod",
+      },
+    );
+
+    expect(argv).toEqual(["project", "list", "--workspace", "prod", "--project", "WEB", "--json"]);
+  });
+
+  test("uses explicit workspace flags without duplicating generic workspace argv", () => {
+    const argv = mcpInputToArgv(
+      {
+        flags: [
+          { description: "Workspace to save", name: "workspace", type: "string", required: true },
+        ],
+        words: ["auth", "api-key"],
+      },
+      {
+        workspace: "prod",
+      },
+    );
+
+    expect(argv).toEqual(["auth", "api-key", "--workspace", "prod", "--json"]);
+  });
+
+  test("lets explicit workspace flag metadata win in schema", () => {
+    const schema = buildMcpInputSchema({
+      flags: [
+        { description: "Workspace to save", name: "workspace", type: "string", required: true },
+      ],
+    });
+
+    expect(schema).toEqual({
+      additionalProperties: false,
+      properties: {
+        workspace: { description: "Workspace to save", type: "string" },
+      },
+      required: ["workspace"],
+      type: "object",
+    });
+  });
+
   test("omits false boolean flags and repeats array flags", () => {
     const argv = mcpInputToArgv(
       {
@@ -158,6 +206,15 @@ describe("CLI command specs", () => {
     expect(new Set(names).size).toBe(names.length);
   });
 
+  test("uses unique CLI command and alias keys", () => {
+    const keys = commandSpecs.flatMap((spec) => [
+      commandKey(spec.words),
+      ...(spec.aliases ?? []).map((aliasWords) => commandKey(aliasWords)),
+    ]);
+
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
   test("defines required metadata for every command", () => {
     for (const spec of commandSpecs) {
       expect(spec.words.length).toBeGreaterThan(0);
@@ -194,10 +251,23 @@ describe("CLI command specs", () => {
   test("marks known destructive commands", () => {
     const destructiveNames = commandSpecs
       .filter((spec) => spec.destructive)
-      .map((spec) => spec.mcpName);
+      .map((spec) => spec.mcpName)
+      .sort();
 
     expect(destructiveNames).toEqual(
-      expect.arrayContaining(["issue_delete", "project_delete", "comment_delete"]),
+      [
+        "comment_delete",
+        "cycle_delete",
+        "issue_attachment_delete",
+        "issue_delete",
+        "issue_link_delete",
+        "label_delete",
+        "module_delete",
+        "page_delete",
+        "project_archive",
+        "project_delete",
+        "state_delete",
+      ].sort(),
     );
   });
 });

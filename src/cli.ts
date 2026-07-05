@@ -26,7 +26,13 @@ import {
   resolveProject,
 } from "./lib/plane-client.js";
 import { buildPlaneOAuthAuthorizeUrl, exchangePlaneOAuthToken } from "./lib/plane-oauth.js";
-import { type CommandSpec, commandKey, defaultMcpName, mcpInputToArgv } from "./commands/registry.js";
+import {
+  type CommandSpec,
+  commandKey,
+  defaultMcpName,
+  mcpInputToArgv,
+  mcpInputToContextInput,
+} from "./commands/registry.js";
 
 export type CliDeps = ConfigLoadOptions & {
   fetch?: FetchLike;
@@ -800,7 +806,7 @@ export async function runMcpCommand(
     });
   }
   const argv = mcpInputToArgv(spec, input);
-  const parsed = parseArgv(argv);
+  const parsed = mcpInputToContextInput(spec, input);
   const context: CommandContext = {
     argv,
     cwd: deps.cwd,
@@ -809,7 +815,7 @@ export async function runMcpCommand(
     flags: parsed.flags,
     home: deps.home,
     json: true,
-    positionals: parsed.positionals.slice(spec.words.length),
+    positionals: parsed.positionals,
   };
   return spec.handler(context);
 }

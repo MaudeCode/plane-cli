@@ -36,6 +36,11 @@ export type McpInputSchema = {
   additionalProperties: false;
 };
 
+export type McpCommandContextInput = {
+  flags: Record<string, string | boolean | string[]>;
+  positionals: string[];
+};
+
 function isBlankString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length === 0;
 }
@@ -188,4 +193,68 @@ export function mcpInputToArgv(
 
   argv.push("--json");
   return argv;
+}
+
+export function mcpInputToContextInput(
+  spec: Pick<CommandSpec<unknown>, "args" | "flags">,
+  input: Record<string, unknown>,
+): McpCommandContextInput {
+  const flags: Record<string, string | boolean | string[]> = {};
+  const positionals: string[] = [];
+
+  if (
+    !hasExplicitWorkspaceFlag(spec) &&
+    input.workspace !== undefined &&
+    input.workspace !== null &&
+    !isBlankString(input.workspace)
+  ) {
+    flags.workspace = String(input.workspace);
+  }
+
+  for (const arg of spec.args ?? []) {
+    const value = input[arg.name];
+    if (
+      value !== undefined &&
+      value !== null &&
+      !(typeof value === "string" && value.trim().length === 0)
+    ) {
+      positionals.push(String(value));
+    }
+  }
+
+  for (const flag of spec.flags ?? []) {
+    const propertyName = flagMcpPropertyName(flag);
+    const value = input[propertyName];
+    if (value === undefined || value === null) {
+      continue;
+    }
+
+    if (flag.type === "boolean") {
+      if (value === true) {
+        flags[flag.name] = true;
+      }
+      continue;
+    }
+
+    if (flag.type === "string[]") {
+      const values = (Array.isArray(value) ? value : [value])
+        .filter((item) => item !== undefined && item !== null && !isBlankString(item))
+        .map((item) => String(item));
+      if (values.length === 1) {
+        flags[flag.name] = values[0] ?? "";
+      } else if (values.length > 1) {
+        flags[flag.name] = values;
+      }
+      continue;
+    }
+
+    if (flag.type === "string" && isBlankString(value)) {
+      continue;
+    }
+
+    flags[flag.name] = String(value);
+  }
+
+  flags.json = true;
+  return { flags, positionals };
 }

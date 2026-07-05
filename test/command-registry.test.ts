@@ -421,4 +421,73 @@ describe("runMcpCommand", () => {
     expect(saved).toContain("workspaceSlug: engineering");
     expect(saved).toContain("apiKey: secret");
   });
+
+  test("preserves argument values that start with double dashes", async () => {
+    const cwd = await tempDir();
+    await writeFile(
+      join(cwd, ".plane-cli.yaml"),
+      "defaultWorkspace: prod\nworkspaces:\n  prod:\n    workspaceSlug: acme\n    apiKey: plane_api_secret\n",
+    );
+    const fetch = vi.fn(async () =>
+      response({ next_page_results: false, results: [{ id: "P1", identifier: "FOO", name: "--foo" }] }),
+    );
+
+    const result = await runMcpCommand(
+      "project_get",
+      { project: "--foo" },
+      {
+        cwd,
+        env: {},
+        fetch,
+        home: cwd,
+      },
+    );
+
+    expect(result).toEqual({
+      data: { id: "P1", identifier: "FOO", name: "--foo" },
+      workspace: expect.objectContaining({ name: "prod", workspaceSlug: "acme" }),
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.plane.so/api/v1/workspaces/acme/projects/?per_page=100",
+      expect.anything(),
+    );
+  });
+
+  test("preserves flag string values that start with double dashes", async () => {
+    const cwd = await tempDir();
+    await writeFile(
+      join(cwd, ".plane-cli.yaml"),
+      "defaultWorkspace: prod\nworkspaces:\n  prod:\n    workspaceSlug: acme\n    apiKey: plane_api_secret\n",
+    );
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response({
+          next_page_results: false,
+          results: [{ id: "PROJECT-ID", identifier: "WEB", name: "Web" }],
+        }),
+      )
+      .mockResolvedValueOnce(response({ id: "ISSUE-ID", identifier: "WEB-1" }))
+      .mockResolvedValueOnce(response({ id: "COMMENT-ID", comment_html: "<p>--ship-it</p>" }));
+
+    const result = await runMcpCommand(
+      "comment_create",
+      { body: "--ship-it", issue: "WEB-1", project: "Web" },
+      {
+        cwd,
+        env: {},
+        fetch,
+        home: cwd,
+      },
+    );
+
+    expect(result).toEqual({
+      data: { comment_html: "<p>--ship-it</p>", id: "COMMENT-ID" },
+      workspace: expect.objectContaining({ name: "prod", workspaceSlug: "acme" }),
+    });
+    expect(fetch.mock.calls[2]?.[1]).toMatchObject({
+      body: JSON.stringify({ comment_html: "--ship-it", comment_stripped: "--ship-it" }),
+      method: "POST",
+    });
+  });
 });

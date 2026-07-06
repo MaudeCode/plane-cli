@@ -175,6 +175,17 @@ describe("Plane MCP server", () => {
     ).rejects.toThrow("PLANE_MCP_AUTH_TOKEN is required");
   });
 
+  test("formats IPv6 literal hosts in the advertised URL", async () => {
+    const server = await startPlaneMcpHttpServer({ env: {}, host: "::1", port: 0 });
+    try {
+      expect(server.url).toMatch(/^http:\/\/\[::1\]:\d+\/mcp$/);
+      const res = await fetch(server.url.replace("/mcp", "/not-found"));
+      expect(res.status).toBe(404);
+    } finally {
+      await server.close();
+    }
+  });
+
   test("closes the context store when HTTP listen fails after store startup", async () => {
     const server = await startPlaneMcpHttpServer({ env: {}, host: "127.0.0.1", port: 0 });
     const port = Number(new URL(server.url).port);

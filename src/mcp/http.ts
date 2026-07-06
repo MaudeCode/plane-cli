@@ -118,7 +118,7 @@ export async function startPlaneMcpHttpServer(
 
   const address = httpServer.address();
   const selectedPort = typeof address === "object" && address ? address.port : port;
-  const urlHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+  const urlHost = formatHostForUrl(host);
 
   return {
     close: async () => {
@@ -163,6 +163,12 @@ function isPublicHost(host: string): boolean {
     host === "localhost" ||
     host.endsWith(".localhost")
   );
+}
+
+function formatHostForUrl(host: string): string {
+  if (host === "0.0.0.0" || host === "::") return "127.0.0.1";
+  if (host.includes(":") && !host.startsWith("[")) return `[${host}]`;
+  return host;
 }
 
 function parseRequestUrl(req: IncomingMessage, fallbackHost: string): URL | undefined {

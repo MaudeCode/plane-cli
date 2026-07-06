@@ -12,7 +12,7 @@ import {
   WorkspaceNotResolvedError,
 } from "./errors.js";
 
-const DEFAULT_BASE_URL = "https://api.plane.so";
+export const DEFAULT_BASE_URL = "https://api.plane.so";
 
 const rawWorkspaceSchema = z.object({
   apiKey: z.string().optional(),
@@ -42,15 +42,21 @@ const configSchema = z.object({
 });
 
 export type ConfigLoadOptions = {
+  allowMissingCredentials?: boolean;
   cwd?: string;
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   home?: string;
+  planeAuth?: PlaneAuthConfig;
 };
+
+export type PlaneAuthConfig =
+  | { type: "apiKey"; apiKey: string }
+  | { accessToken: string; type: "oauth" };
 
 export type WorkspaceConfig = {
   apiKey?: string;
   auth?:
-    | { type: "apiKey"; apiKey: string }
+    | PlaneAuthConfig
     | {
         accessToken: string;
         appInstallationId?: string;
@@ -221,25 +227,28 @@ export async function loadConfig(options: ConfigLoadOptions = {}): Promise<AppCo
     const auth =
       workspace.auth ??
       (workspace.apiKey ? { type: "apiKey" as const, apiKey: workspace.apiKey } : undefined);
-    const resolvedAuth = envApiKey ? { type: "apiKey" as const, apiKey: envApiKey } : auth;
-    if (!resolvedAuth) throw new MissingPlaneApiKeyError(name);
+    const resolvedAuth =
+      options.planeAuth ?? (envApiKey ? { type: "apiKey" as const, apiKey: envApiKey } : auth);
+    if (!resolvedAuth && !options.allowMissingCredentials) throw new MissingPlaneApiKeyError(name);
     return {
-      apiKey: resolvedAuth.type === "apiKey" ? resolvedAuth.apiKey : undefined,
+      apiKey: resolvedAuth?.type === "apiKey" ? resolvedAuth.apiKey : undefined,
       auth:
-        resolvedAuth.type === "oauth"
+        resolvedAuth?.type === "oauth"
           ? {
               accessToken: resolvedAuth.accessToken ?? "",
-              appInstallationId: resolvedAuth.appInstallationId,
-              clientId: resolvedAuth.clientId,
-              clientSecret: resolvedAuth.clientSecret,
-              expiresAt: resolvedAuth.expiresAt,
-              flow: resolvedAuth.flow,
-              refreshToken: resolvedAuth.refreshToken,
-              scopes: resolvedAuth.scopes,
-              tokenType: resolvedAuth.tokenType,
+              appInstallationId: "appInstallationId" in resolvedAuth ? resolvedAuth.appInstallationId : undefined,
+              clientId: "clientId" in resolvedAuth ? resolvedAuth.clientId : undefined,
+              clientSecret: "clientSecret" in resolvedAuth ? resolvedAuth.clientSecret : undefined,
+              expiresAt: "expiresAt" in resolvedAuth ? resolvedAuth.expiresAt : undefined,
+              flow: "flow" in resolvedAuth ? resolvedAuth.flow : undefined,
+              refreshToken: "refreshToken" in resolvedAuth ? resolvedAuth.refreshToken : undefined,
+              scopes: "scopes" in resolvedAuth ? resolvedAuth.scopes : undefined,
+              tokenType: "tokenType" in resolvedAuth ? resolvedAuth.tokenType : undefined,
               type: "oauth" as const,
             }
-          : { type: "apiKey" as const, apiKey: resolvedAuth.apiKey ?? "" },
+          : resolvedAuth?.type === "apiKey"
+            ? { type: "apiKey" as const, apiKey: resolvedAuth.apiKey ?? "" }
+            : undefined,
       baseUrl,
       displayName: workspace.displayName,
       name,

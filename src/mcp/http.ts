@@ -1,9 +1,9 @@
-import { timingSafeEqual } from "node:crypto";
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { CliDeps } from "../cli.js";
+import type { PlaneAuthConfig } from "../lib/config.js";
 import { createPlaneMcpServer } from "./server.js";
 import {
   createContextStoreFromEnv,
@@ -11,9 +11,7 @@ import {
 } from "./session-context.js";
 
 export type PlaneMcpHttpOptions = CliDeps & {
-  allowUnauthenticated?: boolean;
   allowedOrigins?: string[];
-  authToken?: string;
   contextStore?: PlaneMcpContextStore;
   host?: string;
   port?: number;
@@ -32,18 +30,11 @@ export async function startPlaneMcpHttpServer(
   const port = options.port ?? Number(env.PORT ?? 3000);
   const cwd = options.cwd ?? env.PLANE_CLI_CWD ?? process.cwd();
   const home = options.home ?? env.PLANE_CLI_HOME ?? env.HOME;
-  const authToken = nonEmpty(options.authToken) ?? nonEmpty(env.PLANE_MCP_AUTH_TOKEN);
-  const allowUnauthenticated =
-    options.allowUnauthenticated ?? env.PLANE_MCP_ALLOW_UNAUTHENTICATED === "true";
   const allowedOrigins = new Set([
     ...parseAllowedOrigins(env.PLANE_MCP_ALLOWED_ORIGINS),
     ...(options.allowedOrigins ?? []).map((origin) => normalizeOrigin(origin)).filter(isDefined),
   ]);
   const contextStore = options.contextStore ?? createContextStoreFromEnv(env);
-
-  if (!authToken && !allowUnauthenticated && isPublicHost(host)) {
-    throw new Error("PLANE_MCP_AUTH_TOKEN is required when binding MCP to a public interface.");
-  }
 
   await contextStore.start?.();
 
@@ -76,12 +67,13 @@ export async function startPlaneMcpHttpServer(
       return;
     }
 
-    if (authToken && !hasBearerToken(req, authToken)) {
+    const planeAuth = readPlaneAuth(req);
+    if (!planeAuth) {
       res.writeHead(401, {
         "content-type": "application/json",
-        "www-authenticate": "Bearer",
+        "www-authenticate": 'Bearer realm="Plane", X-API-Key',
       });
-      res.end(JSON.stringify({ error: "Unauthorized" }));
+      res.end(JSON.stringify({ error: "Plane credentials are required" }));
       return;
     }
 
@@ -89,7 +81,14 @@ export async function startPlaneMcpHttpServer(
       await handleMcpRequest(
         req,
         res,
-        { cwd, env, fetch: options.fetch, home },
+        {
+          cwd,
+          disableCredentialPersistence: true,
+          env,
+          fetch: options.fetch,
+          home,
+          planeAuth,
+        },
         contextStore,
       );
     } catch (error) {
@@ -131,10 +130,6 @@ export async function startPlaneMcpHttpServer(
   };
 }
 
-function nonEmpty(value: string | undefined): string | undefined {
-  return value && value.length > 0 ? value : undefined;
-}
-
 function parseAllowedOrigins(value: string | undefined): string[] {
   if (!value) return [];
   return value
@@ -154,15 +149,6 @@ function normalizeOrigin(origin: string): string | undefined {
 
 function isDefined<T>(value: T | undefined): value is T {
   return value !== undefined;
-}
-
-function isPublicHost(host: string): boolean {
-  return !(
-    host === "127.0.0.1" ||
-    host === "::1" ||
-    host === "localhost" ||
-    host.endsWith(".localhost")
-  );
 }
 
 function formatHostForUrl(host: string): string {
@@ -210,7 +196,7 @@ function setCorsHeaders(req: IncomingMessage, res: ServerResponse, origin: strin
     "access-control-allow-headers",
     typeof requestedHeaders === "string"
       ? requestedHeaders
-      : "authorization, content-type, mcp-session-id, accept",
+      : "authorization, x-api-key, x-plane-api-key, content-type, mcp-session-id, accept",
   );
   res.setHeader("access-control-expose-headers", "mcp-session-id");
   res.setHeader("vary", "Origin, Access-Control-Request-Headers");
@@ -225,22 +211,30 @@ function isLocalHost(host: string): boolean {
   );
 }
 
-function hasBearerToken(req: IncomingMessage, expectedToken: string): boolean {
+function readPlaneAuth(req: IncomingMessage): PlaneAuthConfig | undefined {
   const authorization = req.headers.authorization;
-  if (typeof authorization !== "string") return false;
+  if (typeof authorization === "string") {
+    const match = /^Bearer\s+(.+)$/i.exec(authorization.trim());
+    const accessToken = match?.[1]?.trim();
+    if (accessToken) return { accessToken, type: "oauth" };
+  }
 
-  const expected = `Bearer ${expectedToken}`;
-  const actualBuffer = Buffer.from(authorization);
-  const expectedBuffer = Buffer.from(expected);
-  return (
-    actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer)
-  );
+  const apiKey = headerString(req.headers["x-api-key"]) ?? headerString(req.headers["x-plane-api-key"]);
+  return apiKey ? { apiKey, type: "apiKey" } : undefined;
+}
+
+function headerString(value: string | string[] | undefined): string | undefined {
+  const header = Array.isArray(value) ? value[0] : value;
+  return header && header.trim().length > 0 ? header.trim() : undefined;
 }
 
 async function handleMcpRequest(
   req: IncomingMessage,
   res: ServerResponse,
-  deps: Pick<PlaneMcpHttpOptions, "cwd" | "env" | "fetch" | "home">,
+  deps: Pick<
+    PlaneMcpHttpOptions,
+    "cwd" | "disableCredentialPersistence" | "env" | "fetch" | "home" | "planeAuth"
+  >,
   contextStore: PlaneMcpContextStore,
 ): Promise<void> {
   if (req.method === "DELETE") {

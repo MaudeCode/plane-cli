@@ -12,25 +12,28 @@
   ],
   "license": "MIT",
   "bin": {
-    "plane-cli": "./bin/plane-cli"
+    "plane-cli": "./bin/plane-cli",
+    "plane-mcp": "./dist/mcp/index.js"
   },
   "files": [
     "bin",
-    "dist/index.js",
-    "dist/index.d.ts",
+    "dist",
     "README.md"
   ],
   "type": "module",
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --clean --out-dir dist && bun build src/index.ts --compile --outfile dist/plane-cli",
+    "build": "tsup src/index.ts src/mcp/index.ts --format esm --dts --clean --out-dir dist && bun build src/index.ts --compile --outfile dist/plane-cli",
     "ci": "bun run test && bun run build && bun run lint",
     "dev": "tsx src/index.ts",
+    "dev:mcp": "tsx src/mcp/index.ts",
     "lint": "oxlint .",
     "prepack": "bun run build",
     "format": "oxfmt --write .",
     "test": "vitest run"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "redis": "^6.1.0",
     "yaml": "^2.7.0",
     "zod": "^3.24.0"
   },

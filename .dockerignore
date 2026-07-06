@@ -1,0 +1,8 @@
+.git
+.github
+dist
+docs/superpowers
+node_modules
+coverage
+.DS_Store
+*.log

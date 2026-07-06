@@ -22,7 +22,9 @@ describe("command JSON output", () => {
       join(cwd, ".plane-cli.yaml"),
       "defaultWorkspace: prod\nworkspaces:\n  prod:\n    workspaceSlug: acme\n    apiKey: plane_api_secret\n",
     );
-    const fetch = vi.fn(async () => response({ next_page_results: false, results: [{ id: "P1", name: "Web" }] }));
+    const fetch = vi.fn(async () =>
+      response({ next_page_results: false, results: [{ id: "P1", name: "Web" }] }),
+    );
 
     const result = await runCli(["project", "list", "--json"], {
       cwd,
@@ -34,7 +36,8 @@ describe("command JSON output", () => {
     expect(result).toEqual({
       exitCode: 0,
       stderr: "",
-      stdout: JSON.stringify({ ok: true, workspace: "prod", data: [{ id: "P1", name: "Web" }] }) + "\n",
+      stdout:
+        JSON.stringify({ ok: true, workspace: "prod", data: [{ id: "P1", name: "Web" }] }) + "\n",
     });
   });
 
@@ -56,7 +59,9 @@ describe("command JSON output", () => {
         "    apiKey: env-secret",
       ].join("\n"),
     );
-    const fetch = vi.fn(async () => response({ next_page_results: false, results: [{ id: "P1", name: "Web" }] }));
+    const fetch = vi.fn(async () =>
+      response({ next_page_results: false, results: [{ id: "P1", name: "Web" }] }),
+    );
 
     const result = await runCli(["--workspace", "explicit", "project", "list", "--json"], {
       cwd,
@@ -150,16 +155,32 @@ describe("command JSON output", () => {
       )
       .mockResolvedValueOnce(response({ id: "ISSUE-ID", name: "Fix login", sequence_id: 123 }));
 
-    const result = await runCli(["issue", "create", "--project", "Web", "--title", "Fix login", "--description=a=b", "--json"], {
-      cwd,
-      env: {},
-      fetch,
-      home: cwd,
-    });
+    const result = await runCli(
+      [
+        "issue",
+        "create",
+        "--project",
+        "Web",
+        "--title",
+        "Fix login",
+        "--description=a=b",
+        "--json",
+      ],
+      {
+        cwd,
+        env: {},
+        fetch,
+        home: cwd,
+      },
+    );
 
     expect(result.exitCode).toBe(0);
     expect(fetch.mock.calls[1]?.[1]).toMatchObject({
-      body: JSON.stringify({ description_html: "a=b", description_stripped: "a=b", name: "Fix login" }),
+      body: JSON.stringify({
+        description_html: "a=b",
+        description_stripped: "a=b",
+        name: "Fix login",
+      }),
       method: "POST",
     });
   });
@@ -179,7 +200,9 @@ describe("command JSON output", () => {
 
   test("auth api-key discovers workspace slug before saving config", async () => {
     const home = await tempDir();
-    const fetch = vi.fn(async () => response([{ id: "WORKSPACE-ID", name: "Zoo", slug: "engineering" }]));
+    const fetch = vi.fn(async () =>
+      response([{ id: "WORKSPACE-ID", name: "Zoo", slug: "engineering" }]),
+    );
 
     const result = await runCli(
       [
@@ -393,18 +416,45 @@ describe("command JSON output", () => {
           results: [{ id: "PROJECT-ID", identifier: "WEB", name: "Web" }],
         }),
       );
-    const dirtyFlags = ["--state", "STATE-ID", "--assignee", "USER-ID", "--label", "LABEL-ID", "--json"];
+    const dirtyFlags = [
+      "--state",
+      "STATE-ID",
+      "--assignee",
+      "USER-ID",
+      "--label",
+      "LABEL-ID",
+      "--json",
+    ];
 
     const projectFetch = makeFetch();
-    await runCli(["project", "list", ...dirtyFlags], { cwd, env: {}, fetch: projectFetch, home: cwd });
-    expect(projectFetch.mock.calls.at(-1)?.[0]).toBe("https://api.plane.so/api/v1/workspaces/acme/projects/");
+    await runCli(["project", "list", ...dirtyFlags], {
+      cwd,
+      env: {},
+      fetch: projectFetch,
+      home: cwd,
+    });
+    expect(projectFetch.mock.calls.at(-1)?.[0]).toBe(
+      "https://api.plane.so/api/v1/workspaces/acme/projects/",
+    );
 
     const memberFetch = makeFetch();
-    await runCli(["member", "list", ...dirtyFlags], { cwd, env: {}, fetch: memberFetch, home: cwd });
-    expect(memberFetch.mock.calls.at(-1)?.[0]).toBe("https://api.plane.so/api/v1/workspaces/acme/members/");
+    await runCli(["member", "list", ...dirtyFlags], {
+      cwd,
+      env: {},
+      fetch: memberFetch,
+      home: cwd,
+    });
+    expect(memberFetch.mock.calls.at(-1)?.[0]).toBe(
+      "https://api.plane.so/api/v1/workspaces/acme/members/",
+    );
 
     const cycleFetch = makeFetch();
-    await runCli(["cycle", "list", "--project", "Web", ...dirtyFlags], { cwd, env: {}, fetch: cycleFetch, home: cwd });
+    await runCli(["cycle", "list", "--project", "Web", ...dirtyFlags], {
+      cwd,
+      env: {},
+      fetch: cycleFetch,
+      home: cwd,
+    });
     expect(cycleFetch.mock.calls.at(-1)?.[0]).toBe(
       "https://api.plane.so/api/v1/workspaces/acme/projects/PROJECT-ID/cycles/",
     );
@@ -486,7 +536,9 @@ describe("command JSON output", () => {
           results: [{ id: "PROJECT-ID", identifier: "WEB", name: "Web" }],
         }),
       )
-      .mockResolvedValueOnce(response({ next_page_results: false, results: [{ id: "CYCLE-ID", name: "Sprint 1" }] }));
+      .mockResolvedValueOnce(
+        response({ next_page_results: false, results: [{ id: "CYCLE-ID", name: "Sprint 1" }] }),
+      );
 
     const result = await runCli(["cycles", "list", "--project", "Web", "--json"], {
       cwd,
@@ -537,12 +589,15 @@ describe("command JSON output", () => {
     );
     const fetch = vi.fn();
 
-    const result = await runCli(["issue", "advanced-search", "--filters-file", filtersPath, "--json"], {
-      cwd,
-      env: {},
-      fetch,
-      home: cwd,
-    });
+    const result = await runCli(
+      ["issue", "advanced-search", "--filters-file", filtersPath, "--json"],
+      {
+        cwd,
+        env: {},
+        fetch,
+        home: cwd,
+      },
+    );
 
     expect(result.exitCode).toBe(2);
     expect(JSON.parse(result.stdout)).toMatchObject({
@@ -558,10 +613,13 @@ describe("command JSON output", () => {
   test("does not treat confirm=false as destructive confirmation", async () => {
     const fetch = vi.fn();
 
-    const result = await runCli(["issue", "delete", "ISSUE-ID", "--project", "Web", "--confirm=false", "--json"], {
-      env: {},
-      fetch,
-    });
+    const result = await runCli(
+      ["issue", "delete", "ISSUE-ID", "--project", "Web", "--confirm=false", "--json"],
+      {
+        env: {},
+        fetch,
+      },
+    );
 
     expect(result.exitCode).toBe(2);
     expect(JSON.parse(result.stdout)).toMatchObject({
@@ -590,12 +648,15 @@ describe("command JSON output", () => {
       )
       .mockResolvedValueOnce(response({ id: "ISSUE-ID" }));
 
-    const result = await runCli(["issue", "delete", "ISSUE-ID", "--project", "Web", "--confirm=true", "--json"], {
-      cwd,
-      env: {},
-      fetch,
-      home: cwd,
-    });
+    const result = await runCli(
+      ["issue", "delete", "ISSUE-ID", "--project", "Web", "--confirm=true", "--json"],
+      {
+        cwd,
+        env: {},
+        fetch,
+        home: cwd,
+      },
+    );
 
     expect(result.exitCode).toBe(0);
     expect(fetch.mock.calls[1]?.[0]).toBe(
@@ -626,7 +687,9 @@ describe("command JSON output", () => {
           results: [{ id: "PROJECT-ID", identifier: "WEB", name: "Web" }],
         }),
       )
-      .mockResolvedValueOnce(response({ id: "LINK-ID", title: "PR", url: "https://example.com/pr" }))
+      .mockResolvedValueOnce(
+        response({ id: "LINK-ID", title: "PR", url: "https://example.com/pr" }),
+      )
       .mockResolvedValueOnce(
         response({
           next_page_results: false,
@@ -656,10 +719,12 @@ describe("command JSON output", () => {
       ],
       { cwd, env: {}, fetch, home: cwd },
     );
-    const list = await runCli(
-      ["issue", "link", "list", "ISSUE-ID", "--project", "Web", "--json"],
-      { cwd, env: {}, fetch, home: cwd },
-    );
+    const list = await runCli(["issue", "link", "list", "ISSUE-ID", "--project", "Web", "--json"], {
+      cwd,
+      env: {},
+      fetch,
+      home: cwd,
+    });
 
     expect(create.exitCode).toBe(0);
     expect(list.exitCode).toBe(0);
@@ -985,5 +1050,38 @@ describe("command JSON output", () => {
       data: [{ id: "ATTACHMENT-ID", name: "notes.md" }],
       ok: true,
     });
+  });
+});
+
+describe("destructive command JSON guards", () => {
+  test.each([
+    ["project_archive", ["project", "archive", "PROJECT"]],
+    ["project_delete", ["project", "delete", "PROJECT"]],
+    ["issue_delete", ["issue", "delete", "ISSUE-ID", "--project", "WEB"]],
+    ["issue_link_delete", ["issue", "link", "delete", "LINK-ID", "ISSUE-ID", "--project", "WEB"]],
+    [
+      "issue_attachment_delete",
+      ["issue", "attachment", "delete", "ATTACHMENT-ID", "ISSUE-ID", "--project", "WEB"],
+    ],
+    ["state_delete", ["state", "delete", "STATE-ID", "--project", "WEB"]],
+    ["label_delete", ["label", "delete", "LABEL-ID", "--project", "WEB"]],
+    ["module_delete", ["module", "delete", "MODULE-ID", "--project", "WEB"]],
+    ["cycle_delete", ["cycle", "delete", "CYCLE-ID", "--project", "WEB"]],
+    ["page_delete", ["page", "delete", "PAGE-ID", "--project", "WEB"]],
+    ["comment_delete", ["comment", "delete", "COMMENT-ID", "ISSUE-ID", "--project", "WEB"]],
+  ])("%s requires --confirm before API access", async (_name, argv) => {
+    const fetch = vi.fn();
+
+    const result = await runCli([...argv, "--json"], { env: {}, fetch });
+
+    expect(result.exitCode).toBe(2);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      error: {
+        code: "VALIDATION_ERROR",
+        message: "Destructive commands require --confirm.",
+      },
+      ok: false,
+    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

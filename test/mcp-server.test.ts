@@ -1,4 +1,5 @@
 import { mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -61,6 +62,27 @@ async function rpc(
     return JSON.parse(dataLine!.slice("data: ".length));
   }
   return JSON.parse(text);
+}
+
+async function rawHttpRequest(port: number, request: string): Promise<string> {
+  return await new Promise((resolve, reject) => {
+    const socket = connect(port, "127.0.0.1");
+    const chunks: Buffer[] = [];
+    socket.setTimeout(1_000);
+    socket.on("connect", () => {
+      socket.write(request);
+    });
+    socket.on("data", (chunk) => {
+      chunks.push(chunk);
+    });
+    socket.on("end", () => {
+      resolve(Buffer.concat(chunks).toString("utf8"));
+    });
+    socket.on("timeout", () => {
+      socket.destroy(new Error("Timed out waiting for raw HTTP response."));
+    });
+    socket.on("error", reject);
+  });
 }
 
 describe("Plane MCP server", () => {
@@ -215,6 +237,70 @@ describe("Plane MCP server", () => {
         headers,
       )) as { result: { tools: Array<{ name: string }> } };
       expect(listResponse.result.tools.some((tool) => tool.name === "issue_get")).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("rejects unexpected browser origins before MCP handling", async () => {
+    const server = await startPlaneMcpHttpServer({ env: {}, host: "127.0.0.1", port: 0 });
+    try {
+      const res = await fetch(server.url, {
+        body: JSON.stringify({ id: "1", jsonrpc: "2.0", method: "tools/list" }),
+        headers: {
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          origin: "https://evil.example",
+        },
+        method: "POST",
+      });
+
+      expect(res.status).toBe(403);
+      await expect(res.json()).resolves.toEqual({ error: "Forbidden origin" });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("allows explicitly configured browser origins", async () => {
+    const server = await startPlaneMcpHttpServer({
+      env: { PLANE_MCP_ALLOWED_ORIGINS: "https://agent.example" },
+      host: "127.0.0.1",
+      port: 0,
+    });
+    try {
+      const headers = { origin: "https://agent.example" };
+      await rpc(server.url, "initialize", {
+        capabilities: {},
+        clientInfo: { name: "origin-test", version: "0.0.0" },
+        protocolVersion: "2025-06-18",
+      }, headers);
+      expect(headers).toHaveProperty("mcp-session-id");
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("returns a normal 400 response for malformed Host headers", async () => {
+    const server = await startPlaneMcpHttpServer({ env: {}, host: "127.0.0.1", port: 0 });
+    const port = Number(new URL(server.url).port);
+    try {
+      const responseText = await rawHttpRequest(
+        port,
+        [
+          "POST /mcp HTTP/1.1",
+          "Host: [",
+          "Accept: application/json, text/event-stream",
+          "Content-Type: application/json",
+          "Connection: close",
+          "Content-Length: 2",
+          "",
+          "{}",
+        ].join("\r\n"),
+      );
+
+      expect(responseText).toContain("HTTP/1.1 400");
+      expect(responseText).toContain('"error":"Bad Request"');
     } finally {
       await server.close();
     }

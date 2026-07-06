@@ -12,6 +12,7 @@ import {
 
 export type PlaneMcpHttpOptions = CliDeps & {
   allowUnauthenticated?: boolean;
+  allowedOrigins?: string[];
   authToken?: string;
   contextStore?: PlaneMcpContextStore;
   host?: string;
@@ -34,6 +35,10 @@ export async function startPlaneMcpHttpServer(
   const authToken = nonEmpty(options.authToken) ?? nonEmpty(env.PLANE_MCP_AUTH_TOKEN);
   const allowUnauthenticated =
     options.allowUnauthenticated ?? env.PLANE_MCP_ALLOW_UNAUTHENTICATED === "true";
+  const allowedOrigins = new Set([
+    ...parseAllowedOrigins(env.PLANE_MCP_ALLOWED_ORIGINS),
+    ...(options.allowedOrigins ?? []).map((origin) => normalizeOrigin(origin)).filter(isDefined),
+  ]);
   const contextStore = options.contextStore ?? createContextStoreFromEnv(env);
 
   if (!authToken && !allowUnauthenticated && isPublicHost(host)) {
@@ -43,9 +48,20 @@ export async function startPlaneMcpHttpServer(
   await contextStore.start?.();
 
   const httpServer = createServer(async (req, res) => {
-    if (new URL(req.url ?? "/", `http://${req.headers.host ?? host}`).pathname !== "/mcp") {
+    const requestUrl = parseRequestUrl(req, host);
+    if (!requestUrl) {
+      writeHttpError(res, 400, "Bad Request");
+      return;
+    }
+
+    if (requestUrl.pathname !== "/mcp") {
       res.writeHead(404, { "content-type": "text/plain" });
       res.end("Not Found");
+      return;
+    }
+
+    if (!hasAllowedOrigin(req, allowedOrigins)) {
+      writeHttpError(res, 403, "Forbidden origin");
       return;
     }
 
@@ -98,8 +114,64 @@ function nonEmpty(value: string | undefined): string | undefined {
   return value && value.length > 0 ? value : undefined;
 }
 
+function parseAllowedOrigins(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((origin) => normalizeOrigin(origin.trim()))
+    .filter(isDefined);
+}
+
+function normalizeOrigin(origin: string): string | undefined {
+  if (!origin) return undefined;
+  try {
+    return new URL(origin).origin;
+  } catch {
+    return undefined;
+  }
+}
+
+function isDefined<T>(value: T | undefined): value is T {
+  return value !== undefined;
+}
+
 function isPublicHost(host: string): boolean {
   return !(
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host === "localhost" ||
+    host.endsWith(".localhost")
+  );
+}
+
+function parseRequestUrl(req: IncomingMessage, fallbackHost: string): URL | undefined {
+  const hostHeader = req.headers.host;
+  const host = typeof hostHeader === "string" && hostHeader.length > 0 ? hostHeader : fallbackHost;
+  try {
+    return new URL(req.url ?? "/", `http://${host}`);
+  } catch {
+    return undefined;
+  }
+}
+
+function hasAllowedOrigin(req: IncomingMessage, allowedOrigins: Set<string>): boolean {
+  const originHeader = req.headers.origin;
+  if (originHeader === undefined) return true;
+  if (typeof originHeader !== "string") return false;
+
+  const origin = normalizeOrigin(originHeader);
+  if (!origin) return false;
+  if (allowedOrigins.has(origin)) return true;
+
+  try {
+    return isLocalHost(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isLocalHost(host: string): boolean {
+  return (
     host === "127.0.0.1" ||
     host === "::1" ||
     host === "localhost" ||
@@ -260,4 +332,9 @@ function writeJsonRpcError(
 ): void {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify({ error: { code, message }, id: null, jsonrpc: "2.0" }));
+}
+
+function writeHttpError(res: ServerResponse, status: number, message: string): void {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify({ error: message }));
 }

@@ -276,6 +276,15 @@ Public binds require `PLANE_MCP_AUTH_TOKEN`; MCP clients must send it as:
 Authorization: Bearer <token>
 ```
 
+Requests without an `Origin` header are allowed. Browser requests with an
+`Origin` header are accepted only from localhost/loopback origins by default. Set
+`PLANE_MCP_ALLOWED_ORIGINS` to a comma-separated allowlist when a browser-based
+client must call a hosted deployment:
+
+```bash
+PLANE_MCP_ALLOWED_ORIGINS=https://codex.example,https://hermes.example
+```
+
 Localhost development can run without the token. Set
 `PLANE_MCP_ALLOW_UNAUTHENTICATED=true` only when another layer already restricts
 access to the endpoint.

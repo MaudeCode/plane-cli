@@ -1,18 +1,21 @@
+import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z, type ZodTypeAny } from "zod";
 import { type CliDeps, commandSpecs, runMcpCommand } from "../cli.js";
 import type { CommandFlagSpec, CommandSpec, PrimitiveFlagType } from "../commands/registry.js";
 import { flagToMcpName } from "../commands/registry.js";
 import { jsonError, jsonSuccess } from "../lib/output.js";
-
-export type PlaneMcpSessionContext = {
-  project?: string;
-  workspace?: string;
-};
+import {
+  createMemoryContextStore,
+  type PlaneMcpContextStore,
+  type PlaneMcpSessionContext,
+} from "./session-context.js";
 
 export type PlaneMcpServerOptions = CliDeps & {
   context?: PlaneMcpSessionContext;
+  contextStore?: PlaneMcpContextStore;
   name?: string;
+  sessionId?: string;
   version?: string;
 };
 
@@ -22,7 +25,10 @@ const instructions =
   "Plane MCP exposes typed Plane tools generated from plane-cli. Before Plane work in a local repository, read the local .plane-cli-workspace file and call plane_context_set once with its workspace and optional project. Tool calls then default to that MCP session context. Explicit tool arguments still win. Plane permissions are determined by the configured Plane token/app installation.";
 
 export function createPlaneMcpServer(options: PlaneMcpServerOptions = {}): McpServer {
-  const context = options.context ?? {};
+  const sessionId = options.sessionId ?? randomUUID();
+  const contextStore =
+    options.contextStore ??
+    createMemoryContextStore(options.context ? [[sessionId, options.context]] : []);
   const server = new McpServer(
     {
       name: options.name ?? "plane-cli",
@@ -46,9 +52,9 @@ export function createPlaneMcpServer(options: PlaneMcpServerOptions = {}): McpSe
       },
     },
     async (input) => {
-      context.workspace = input.workspace;
-      context.project = optionalString(input.project);
-      return contextResult(context);
+      const context = { project: optionalString(input.project), workspace: input.workspace };
+      await contextStore.set(sessionId, context);
+      return contextResult(await contextStore.get(sessionId));
     },
   );
 
@@ -62,7 +68,7 @@ export function createPlaneMcpServer(options: PlaneMcpServerOptions = {}): McpSe
       description: "Get the current Plane workspace/project context for this MCP session.",
       inputSchema: {},
     },
-    async () => contextResult(context),
+    async () => contextResult(await contextStore.get(sessionId)),
   );
 
   server.registerTool(
@@ -76,9 +82,8 @@ export function createPlaneMcpServer(options: PlaneMcpServerOptions = {}): McpSe
       inputSchema: {},
     },
     async () => {
-      delete context.workspace;
-      delete context.project;
-      return contextResult(context);
+      await contextStore.clear(sessionId);
+      return contextResult({});
     },
   );
 
@@ -95,6 +100,7 @@ export function createPlaneMcpServer(options: PlaneMcpServerOptions = {}): McpSe
       },
       async (input) => {
         try {
+          const context = await contextStore.get(sessionId);
           const result = await runMcpCommand(
             spec.mcpName,
             applySessionContext(spec, input as Record<string, unknown>, context),

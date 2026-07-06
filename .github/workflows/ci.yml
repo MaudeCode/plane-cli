@@ -10,6 +10,23 @@ permissions:
   contents: read
 
 jobs:
+  actionlint:
+    name: Workflow lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+        run: |
+          bash <(curl -sSfL "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash") "${ACTIONLINT_VERSION}"
+          sudo install -m 0755 actionlint /usr/local/bin/actionlint
+
+      - name: Run actionlint
+        run: actionlint -config-file .github/actionlint.yaml
+
   test:
     name: Test
     runs-on: ubuntu-latest

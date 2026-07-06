@@ -5,10 +5,15 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { CliDeps } from "../cli.js";
 import { createPlaneMcpServer } from "./server.js";
+import {
+  createContextStoreFromEnv,
+  type PlaneMcpContextStore,
+} from "./session-context.js";
 
 export type PlaneMcpHttpOptions = CliDeps & {
   allowUnauthenticated?: boolean;
   authToken?: string;
+  contextStore?: PlaneMcpContextStore;
   host?: string;
   port?: number;
 };
@@ -16,11 +21,6 @@ export type PlaneMcpHttpOptions = CliDeps & {
 type Closeable = {
   close: () => Promise<void>;
   url: string;
-};
-
-type Session = {
-  close: () => Promise<void>;
-  transport: StreamableHTTPServerTransport;
 };
 
 export async function startPlaneMcpHttpServer(
@@ -34,12 +34,13 @@ export async function startPlaneMcpHttpServer(
   const authToken = nonEmpty(options.authToken) ?? nonEmpty(env.PLANE_MCP_AUTH_TOKEN);
   const allowUnauthenticated =
     options.allowUnauthenticated ?? env.PLANE_MCP_ALLOW_UNAUTHENTICATED === "true";
+  const contextStore = options.contextStore ?? createContextStoreFromEnv(env);
 
   if (!authToken && !allowUnauthenticated && isPublicHost(host)) {
     throw new Error("PLANE_MCP_AUTH_TOKEN is required when binding MCP to a public interface.");
   }
 
-  const sessions = new Map<string, Session>();
+  await contextStore.start?.();
 
   const httpServer = createServer(async (req, res) => {
     if (new URL(req.url ?? "/", `http://${req.headers.host ?? host}`).pathname !== "/mcp") {
@@ -57,16 +58,26 @@ export async function startPlaneMcpHttpServer(
       return;
     }
 
-    await handleMcpRequest(req, res, { cwd, env, fetch: options.fetch, home }, sessions);
+    await handleMcpRequest(
+      req,
+      res,
+      { cwd, env, fetch: options.fetch, home },
+      contextStore,
+    );
   });
 
-  await new Promise<void>((resolve, reject) => {
-    httpServer.once("error", reject);
-    httpServer.listen(port, host, () => {
-      httpServer.off("error", reject);
-      resolve();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      httpServer.once("error", reject);
+      httpServer.listen(port, host, () => {
+        httpServer.off("error", reject);
+        resolve();
+      });
     });
-  });
+  } catch (error) {
+    await contextStore.close?.();
+    throw error;
+  }
 
   const address = httpServer.address();
   const selectedPort = typeof address === "object" && address ? address.port : port;
@@ -74,8 +85,7 @@ export async function startPlaneMcpHttpServer(
 
   return {
     close: async () => {
-      await Promise.all([...sessions.values()].map((session) => session.close()));
-      sessions.clear();
+      await contextStore.close?.();
       await new Promise<void>((resolve, reject) => {
         httpServer.close((error) => (error ? reject(error) : resolve()));
       });
@@ -113,48 +123,124 @@ async function handleMcpRequest(
   req: IncomingMessage,
   res: ServerResponse,
   deps: Pick<PlaneMcpHttpOptions, "cwd" | "env" | "fetch" | "home">,
-  sessions: Map<string, Session>,
+  contextStore: PlaneMcpContextStore,
 ): Promise<void> {
-  const sessionId = req.headers["mcp-session-id"];
-  if (typeof sessionId === "string") {
-    const session = sessions.get(sessionId);
-    if (!session) {
+  if (req.method === "DELETE") {
+    const sessionId = readSessionId(req);
+    if (!sessionId) {
+      writeJsonRpcError(res, 400, -32000, "Mcp-Session-Id header is required.");
+      return;
+    }
+    if (!(await contextStore.hasSession(sessionId))) {
       writeJsonRpcError(res, 404, -32000, "Invalid MCP session ID.");
       return;
     }
-    await session.transport.handleRequest(req, res);
+    await contextStore.deleteSession(sessionId);
+    res.writeHead(200);
+    res.end();
     return;
   }
 
-  const parsedBody = await readJsonBody(req);
-  if (!isInitializeRequest(parsedBody)) {
+  if (req.method !== "POST") {
+    writeJsonRpcError(res, 405, -32000, "Method not allowed.");
+    return;
+  }
+
+  let parsedBody: unknown;
+  try {
+    parsedBody = await readJsonBody(req);
+  } catch {
+    writeJsonRpcError(res, 400, -32700, "Parse error.");
+    return;
+  }
+  const isInitializationRequest = isInitializeRequest(parsedBody);
+  const incomingSessionId = readSessionId(req);
+
+  if (isInitializationRequest && incomingSessionId) {
+    writeJsonRpcError(res, 400, -32000, "Initialize requests must not include Mcp-Session-Id.");
+    return;
+  }
+
+  const sessionId = isInitializationRequest ? randomUUID() : incomingSessionId;
+  if (!sessionId) {
     writeJsonRpcError(res, 400, -32000, "MCP session must be initialized first.");
     return;
   }
 
-  let initializedSessionId: string | undefined;
-  const mcpServer = createPlaneMcpServer(deps);
+  const wasInitialized = isInitializationRequest
+    ? exposeSessionIdOnSuccessfulResponse(res, sessionId)
+    : undefined;
+
+  if (isInitializationRequest) {
+    await contextStore.createSession(sessionId);
+  } else if (!(await contextStore.hasSession(sessionId))) {
+    writeJsonRpcError(res, 404, -32000, "Invalid MCP session ID.");
+    return;
+  } else {
+    await contextStore.touchSession(sessionId);
+    res.setHeader("mcp-session-id", sessionId);
+  }
+
+  const mcpServer = createPlaneMcpServer({ ...deps, contextStore, sessionId });
   const transport = new StreamableHTTPServerTransport({
-    onsessioninitialized: (newSessionId) => {
-      initializedSessionId = newSessionId;
-      sessions.set(newSessionId, {
-        close: async () => {
-          await transport.close();
-          await mcpServer.close();
-        },
-        transport,
-      });
-    },
-    sessionIdGenerator: () => randomUUID(),
+    enableJsonResponse: true,
+    sessionIdGenerator: undefined,
   });
 
-  transport.onclose = () => {
-    const id = initializedSessionId ?? transport.sessionId;
-    if (id) sessions.delete(id);
+  try {
+    await mcpServer.connect(transport);
+    await transport.handleRequest(req, res, parsedBody);
+  } finally {
+    if (isInitializationRequest && !wasInitialized?.()) {
+      await contextStore.deleteSession(sessionId);
+    }
+    await mcpServer.close();
+  }
+}
+
+function exposeSessionIdOnSuccessfulResponse(res: ServerResponse, sessionId: string): () => boolean {
+  let finalStatusCode: number | undefined;
+  const originalWriteHead = res.writeHead;
+  const originalEnd = res.end;
+
+  const exposeIfSuccessful = (statusCode: number) => {
+    finalStatusCode = statusCode;
+    if (statusCode >= 200 && statusCode < 300) {
+      res.setHeader("mcp-session-id", sessionId);
+    } else {
+      res.removeHeader("mcp-session-id");
+    }
   };
 
-  await mcpServer.connect(transport);
-  await transport.handleRequest(req, res, parsedBody);
+  res.writeHead = function writeHead(
+    this: ServerResponse,
+    statusCode: number,
+    ...args: Parameters<ServerResponse["writeHead"]> extends [number, ...infer Rest] ? Rest : never
+  ) {
+    exposeIfSuccessful(statusCode);
+    return originalWriteHead.apply(this, [statusCode, ...args] as Parameters<ServerResponse["writeHead"]>);
+  } as ServerResponse["writeHead"];
+
+  res.end = function end(
+    this: ServerResponse,
+    ...args: Parameters<ServerResponse["end"]>
+  ) {
+    if (!res.headersSent) {
+      exposeIfSuccessful(finalStatusCode ?? res.statusCode);
+    }
+    return originalEnd.apply(this, args);
+  } as ServerResponse["end"];
+
+  return () => {
+    const statusCode = finalStatusCode ?? res.statusCode;
+    return statusCode >= 200 && statusCode < 300;
+  };
+}
+
+function readSessionId(req: IncomingMessage): string | undefined {
+  const header = req.headers["mcp-session-id"];
+  if (typeof header !== "string" || header.length === 0) return undefined;
+  return header;
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {

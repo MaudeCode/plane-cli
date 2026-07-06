@@ -6,6 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, test, vi } from "vitest";
 import { createPlaneMcpServer } from "../src/mcp/server.js";
 import { startPlaneMcpHttpServer } from "../src/mcp/http.js";
+import { createMemoryContextStore } from "../src/mcp/session-context.js";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "plane-cli-mcp-test-"));
@@ -152,6 +153,32 @@ describe("Plane MCP server", () => {
     ).rejects.toThrow("PLANE_MCP_AUTH_TOKEN is required");
   });
 
+  test("closes the context store when HTTP listen fails after store startup", async () => {
+    const server = await startPlaneMcpHttpServer({ env: {}, host: "127.0.0.1", port: 0 });
+    const port = Number(new URL(server.url).port);
+    const backingStore = createMemoryContextStore();
+    const contextStore = {
+      ...backingStore,
+      close: vi.fn(async () => undefined),
+      start: vi.fn(async () => undefined),
+    };
+
+    try {
+      await expect(
+        startPlaneMcpHttpServer({
+          contextStore,
+          env: {},
+          host: "127.0.0.1",
+          port,
+        }),
+      ).rejects.toThrow();
+      expect(contextStore.start).toHaveBeenCalledTimes(1);
+      expect(contextStore.close).toHaveBeenCalledTimes(1);
+    } finally {
+      await server.close();
+    }
+  });
+
   test("enforces bearer auth when configured", async () => {
     const server = await startPlaneMcpHttpServer({
       authToken: "mcp-secret",
@@ -256,6 +283,64 @@ describe("Plane MCP server", () => {
     );
   });
 
+  test("returns the normalized context from plane_context_set", async () => {
+    const client = await connectClient(createPlaneMcpServer({ env: {} }));
+
+    try {
+      const setResult = await client.callTool({
+        arguments: { project: " Web ", workspace: " prod " },
+        name: "plane_context_set",
+      });
+      const getResult = await client.callTool({ arguments: {}, name: "plane_context_get" });
+
+      expect(setResult.structuredContent).toEqual({
+        data: { project: "Web", workspace: "prod" },
+        ok: true,
+      });
+      expect(getResult.structuredContent).toEqual(setResult.structuredContent);
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("isolates Plane context by MCP session id in a shared context store", async () => {
+    const contextStore = createMemoryContextStore();
+    const clientA = await connectClient(
+      createPlaneMcpServer({ contextStore, env: {}, sessionId: "session-a" }),
+    );
+    const clientB = await connectClient(
+      createPlaneMcpServer({ contextStore, env: {}, sessionId: "session-b" }),
+    );
+
+    try {
+      await clientA.callTool({
+        arguments: { project: "PCLI", workspace: "MaudeCode" },
+        name: "plane_context_set",
+      });
+      await clientB.callTool({
+        arguments: { project: "WEB", workspace: "Personal" },
+        name: "plane_context_set",
+      });
+
+      await expect(clientA.callTool({ arguments: {}, name: "plane_context_get" })).resolves
+        .toMatchObject({
+          structuredContent: {
+            data: { project: "PCLI", workspace: "MaudeCode" },
+            ok: true,
+          },
+        });
+      await expect(clientB.callTool({ arguments: {}, name: "plane_context_get" })).resolves
+        .toMatchObject({
+          structuredContent: {
+            data: { project: "WEB", workspace: "Personal" },
+            ok: true,
+          },
+        });
+    } finally {
+      await Promise.all([clientA.close(), clientB.close()]);
+    }
+  });
+
   test("persists session context over Streamable HTTP", async () => {
     const cwd = await tempDir();
     await writeFile(
@@ -297,6 +382,214 @@ describe("Plane MCP server", () => {
         workspace: "prod",
       });
       await client.close();
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("allows non-sticky Streamable HTTP requests when replicas share a context store", async () => {
+    const cwd = await tempDir();
+    await writeFile(
+      join(cwd, ".plane-cli.yaml"),
+      "defaultWorkspace: prod\nworkspaces:\n  prod:\n    workspaceSlug: acme\n    apiKey: plane_api_secret\n",
+    );
+    const fetch = vi.fn(async () =>
+      response({ next_page_results: false, results: [{ id: "PROJECT-ID", name: "Web" }] }),
+    );
+    const contextStore = createMemoryContextStore();
+    const serverA = await startPlaneMcpHttpServer({
+      contextStore,
+      cwd,
+      env: {},
+      fetch,
+      home: cwd,
+      host: "127.0.0.1",
+      port: 0,
+    });
+    const serverB = await startPlaneMcpHttpServer({
+      contextStore,
+      cwd,
+      env: {},
+      fetch,
+      home: cwd,
+      host: "127.0.0.1",
+      port: 0,
+    });
+    try {
+      const headers: Record<string, string> = {};
+      await rpc(serverA.url, "initialize", {
+        capabilities: {},
+        clientInfo: { name: "non-sticky-test", version: "0.0.0" },
+        protocolVersion: "2025-06-18",
+      }, headers);
+
+      await rpc(serverB.url, "tools/call", {
+        arguments: { project: "Web", workspace: "prod" },
+        name: "plane_context_set",
+      }, headers);
+      const context = (await rpc(serverA.url, "tools/call", {
+        arguments: {},
+        name: "plane_context_get",
+      }, headers)) as { result: { structuredContent: unknown } };
+      const projects = (await rpc(serverB.url, "tools/call", {
+        arguments: {},
+        name: "project_list",
+      }, headers)) as { result: { structuredContent: unknown } };
+
+      expect(context.result.structuredContent).toEqual({
+        data: { project: "Web", workspace: "prod" },
+        ok: true,
+      });
+      expect(projects.result.structuredContent).toEqual({
+        data: [{ id: "PROJECT-ID", name: "Web" }],
+        ok: true,
+        workspace: "prod",
+      });
+    } finally {
+      await Promise.all([serverA.close(), serverB.close()]);
+    }
+  });
+
+  test("rejects unknown Streamable HTTP session ids without local transport state", async () => {
+    const server = await startPlaneMcpHttpServer({ env: {}, host: "127.0.0.1", port: 0 });
+    try {
+      const res = await fetch(server.url, {
+        body: JSON.stringify({ id: "1", jsonrpc: "2.0", method: "tools/list" }),
+        headers: {
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-session-id": "missing-session",
+        },
+        method: "POST",
+      });
+
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toMatchObject({
+        error: { message: "Invalid MCP session ID." },
+        jsonrpc: "2.0",
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("does not expose or preserve sessions for rejected initialize requests", async () => {
+    const backingStore = createMemoryContextStore();
+    const createdSessionIds: string[] = [];
+    const deletedSessionIds: string[] = [];
+    const contextStore = {
+      ...backingStore,
+      async createSession(sessionId: string) {
+        createdSessionIds.push(sessionId);
+        await backingStore.createSession(sessionId);
+      },
+      async deleteSession(sessionId: string) {
+        deletedSessionIds.push(sessionId);
+        await backingStore.deleteSession(sessionId);
+      },
+    };
+    const server = await startPlaneMcpHttpServer({
+      contextStore,
+      env: {},
+      host: "127.0.0.1",
+      port: 0,
+    });
+    try {
+      const rejected = await fetch(server.url, {
+        body: JSON.stringify({
+          id: "1",
+          jsonrpc: "2.0",
+          method: "initialize",
+          params: {
+            capabilities: {},
+            clientInfo: { name: "bad-accept-test", version: "0.0.0" },
+            protocolVersion: "2025-06-18",
+          },
+        }),
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+
+      expect(rejected.status).toBe(406);
+      expect(rejected.headers.get("mcp-session-id")).toBeNull();
+      expect(createdSessionIds).toHaveLength(1);
+      expect(deletedSessionIds).toEqual(createdSessionIds);
+      await expect(contextStore.hasSession(createdSessionIds[0]!)).resolves.toBe(false);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("returns JSON-RPC parse errors for malformed Streamable HTTP JSON", async () => {
+    const server = await startPlaneMcpHttpServer({ env: {}, host: "127.0.0.1", port: 0 });
+    try {
+      const res = await fetch(server.url, {
+        body: "{",
+        headers: {
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toMatchObject({
+        error: { code: -32700 },
+        id: null,
+        jsonrpc: "2.0",
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("rejects DELETE requests for unknown Streamable HTTP session ids", async () => {
+    const server = await startPlaneMcpHttpServer({ env: {}, host: "127.0.0.1", port: 0 });
+    try {
+      const res = await fetch(server.url, {
+        headers: { "mcp-session-id": "missing-session" },
+        method: "DELETE",
+      });
+
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toMatchObject({
+        error: { message: "Invalid MCP session ID." },
+        jsonrpc: "2.0",
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("allows DELETE requests for known Streamable HTTP session ids", async () => {
+    const server = await startPlaneMcpHttpServer({ env: {}, host: "127.0.0.1", port: 0 });
+    try {
+      const headers: Record<string, string> = {};
+      await rpc(server.url, "initialize", {
+        capabilities: {},
+        clientInfo: { name: "delete-session-test", version: "0.0.0" },
+        protocolVersion: "2025-06-18",
+      }, headers);
+
+      const deleted = await fetch(server.url, {
+        headers,
+        method: "DELETE",
+      });
+      expect(deleted.status).toBe(200);
+
+      const afterDelete = await fetch(server.url, {
+        body: JSON.stringify({ id: "1", jsonrpc: "2.0", method: "tools/list" }),
+        headers: {
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          ...headers,
+        },
+        method: "POST",
+      });
+      expect(afterDelete.status).toBe(404);
     } finally {
       await server.close();
     }

@@ -33,6 +33,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "redis": "^6.1.0",
     "yaml": "^2.7.0",
     "zod": "^3.24.0"
   },

@@ -225,6 +225,7 @@ Docker image:
 docker build -t plane-cli-mcp .
 docker run --rm -p 3000:3000 \
   -e PLANE_MCP_AUTH_TOKEN="$PLANE_MCP_AUTH_TOKEN" \
+  -e PLANE_MCP_REDIS_URL="$PLANE_MCP_REDIS_URL" \
   -v "$HOME/.config/plane-cli:/data/.config/plane-cli:ro" \
   plane-cli-mcp
 ```
@@ -233,6 +234,23 @@ The container runs only the hosted MCP server. It reads Plane configuration the
 same way as the CLI, with `PLANE_CLI_HOME` defaulting to `/data`.
 Deployment-specific secret injection should happen through ordinary environment
 variables or mounted config files.
+
+Hosted MCP request handling is stateless: each HTTP request creates a fresh MCP
+transport/server, while the MCP `mcp-session-id` identifies session context.
+Session context is stored in memory by default. Set `PLANE_MCP_REDIS_URL` or
+`REDIS_URL` to store session markers and Plane workspace/project context in
+Redis instead:
+
+```bash
+PLANE_MCP_REDIS_URL=redis://redis:6379
+PLANE_MCP_REDIS_PREFIX=plane-cli:mcp
+PLANE_MCP_SESSION_TTL_SECONDS=86400
+```
+
+Redis keys are scoped by the MCP `mcp-session-id`, so separate agents keep
+separate Plane context even when they use the same hosted MCP deployment. With a
+shared Redis store, multiple replicas can handle requests for the same
+`mcp-session-id`; sticky routing is not required.
 
 For repository-specific routing, keep `.plane-cli-workspace` local to the agent
 checkout. The hosted MCP server does not need repo mounts and does not maintain a

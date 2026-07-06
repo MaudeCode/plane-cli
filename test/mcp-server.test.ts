@@ -281,6 +281,34 @@ describe("Plane MCP server", () => {
     }
   });
 
+  test("handles allowed CORS preflights before bearer auth", async () => {
+    const server = await startPlaneMcpHttpServer({
+      authToken: "mcp-secret",
+      env: { PLANE_MCP_ALLOWED_ORIGINS: "https://agent.example" },
+      host: "127.0.0.1",
+      port: 0,
+    });
+    try {
+      const res = await fetch(server.url, {
+        headers: {
+          "access-control-request-headers": "authorization, content-type",
+          "access-control-request-method": "POST",
+          origin: "https://agent.example",
+        },
+        method: "OPTIONS",
+      });
+
+      expect(res.status).toBe(204);
+      expect(res.headers.get("access-control-allow-origin")).toBe("https://agent.example");
+      expect(res.headers.get("access-control-allow-methods")).toContain("POST");
+      expect(res.headers.get("access-control-allow-headers")).toBe(
+        "authorization, content-type",
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
   test("returns a normal 400 response for malformed Host headers", async () => {
     const server = await startPlaneMcpHttpServer({ env: {}, host: "127.0.0.1", port: 0 });
     const port = Number(new URL(server.url).port);
@@ -302,6 +330,43 @@ describe("Plane MCP server", () => {
       expect(responseText).toContain("HTTP/1.1 400");
       expect(responseText).toContain('"error":"Bad Request"');
     } finally {
+      await server.close();
+    }
+  });
+
+  test("returns a 500 response when MCP request setup fails before headers are sent", async () => {
+    const backingStore = createMemoryContextStore();
+    const contextStore = {
+      ...backingStore,
+      hasSession: vi.fn(async () => {
+        throw new Error("redis unavailable");
+      }),
+    };
+    const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => undefined);
+    const server = await startPlaneMcpHttpServer({
+      contextStore,
+      env: {},
+      host: "127.0.0.1",
+      port: 0,
+    });
+    try {
+      const res = await fetch(server.url, {
+        body: JSON.stringify({ id: "1", jsonrpc: "2.0", method: "tools/list" }),
+        headers: {
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-session-id": "session-a",
+        },
+        method: "POST",
+      });
+
+      expect(res.status).toBe(500);
+      await expect(res.json()).resolves.toEqual({ error: "Internal Server Error" });
+      expect(emitWarning).toHaveBeenCalledWith(
+        "Plane MCP request failed: redis unavailable",
+      );
+    } finally {
+      emitWarning.mockRestore();
       await server.close();
     }
   });

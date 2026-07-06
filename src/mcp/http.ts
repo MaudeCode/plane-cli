@@ -60,8 +60,19 @@ export async function startPlaneMcpHttpServer(
       return;
     }
 
-    if (!hasAllowedOrigin(req, allowedOrigins)) {
+    const originResult = validateOrigin(req, allowedOrigins);
+    if (!originResult.ok) {
       writeHttpError(res, 403, "Forbidden origin");
+      return;
+    }
+
+    if (originResult.origin) {
+      setCorsHeaders(req, res, originResult.origin);
+    }
+
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
       return;
     }
 
@@ -74,12 +85,22 @@ export async function startPlaneMcpHttpServer(
       return;
     }
 
-    await handleMcpRequest(
-      req,
-      res,
-      { cwd, env, fetch: options.fetch, home },
-      contextStore,
-    );
+    try {
+      await handleMcpRequest(
+        req,
+        res,
+        { cwd, env, fetch: options.fetch, home },
+        contextStore,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.emitWarning(`Plane MCP request failed: ${message}`);
+      if (!res.headersSent) {
+        writeHttpError(res, 500, "Internal Server Error");
+        return;
+      }
+      res.destroy(error instanceof Error ? error : new Error(message));
+    }
   });
 
   try {
@@ -154,20 +175,39 @@ function parseRequestUrl(req: IncomingMessage, fallbackHost: string): URL | unde
   }
 }
 
-function hasAllowedOrigin(req: IncomingMessage, allowedOrigins: Set<string>): boolean {
+type OriginValidationResult = { ok: false } | { ok: true; origin?: string };
+
+function validateOrigin(
+  req: IncomingMessage,
+  allowedOrigins: Set<string>,
+): OriginValidationResult {
   const originHeader = req.headers.origin;
-  if (originHeader === undefined) return true;
-  if (typeof originHeader !== "string") return false;
+  if (originHeader === undefined) return { ok: true };
+  if (typeof originHeader !== "string") return { ok: false };
 
   const origin = normalizeOrigin(originHeader);
-  if (!origin) return false;
-  if (allowedOrigins.has(origin)) return true;
+  if (!origin) return { ok: false };
+  if (allowedOrigins.has(origin)) return { ok: true, origin };
 
   try {
-    return isLocalHost(new URL(origin).hostname);
+    return isLocalHost(new URL(origin).hostname) ? { ok: true, origin } : { ok: false };
   } catch {
-    return false;
+    return { ok: false };
   }
+}
+
+function setCorsHeaders(req: IncomingMessage, res: ServerResponse, origin: string): void {
+  const requestedHeaders = req.headers["access-control-request-headers"];
+  res.setHeader("access-control-allow-origin", origin);
+  res.setHeader("access-control-allow-methods", "POST, DELETE, OPTIONS");
+  res.setHeader(
+    "access-control-allow-headers",
+    typeof requestedHeaders === "string"
+      ? requestedHeaders
+      : "authorization, content-type, mcp-session-id, accept",
+  );
+  res.setHeader("access-control-expose-headers", "mcp-session-id");
+  res.setHeader("vary", "Origin, Access-Control-Request-Headers");
 }
 
 function isLocalHost(host: string): boolean {

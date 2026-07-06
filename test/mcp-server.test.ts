@@ -596,7 +596,12 @@ describe("Plane MCP server", () => {
   });
 
   test("returns structured sanitized errors from tool calls", async () => {
-    const client = await connectClient(createPlaneMcpServer({ env: {} }));
+    const cwd = await tempDir();
+    await writeFile(
+      join(cwd, ".plane-cli.yaml"),
+      "defaultWorkspace: dev\nworkspaces:\n  dev:\n    workspaceSlug: acme\n    apiKey: plane_api_secret\n",
+    );
+    const client = await connectClient(createPlaneMcpServer({ cwd, env: {}, home: cwd }));
 
     const result = await client.callTool({
       arguments: { workspace: "prod" },

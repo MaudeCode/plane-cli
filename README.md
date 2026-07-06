@@ -224,16 +224,30 @@ Docker image:
 ```bash
 docker build -t plane-cli-mcp .
 docker run --rm -p 3000:3000 \
-  -e PLANE_MCP_AUTH_TOKEN="$PLANE_MCP_AUTH_TOKEN" \
   -e PLANE_MCP_REDIS_URL="$PLANE_MCP_REDIS_URL" \
-  -v "$HOME/.config/plane-cli:/data/.config/plane-cli:ro" \
   plane-cli-mcp
 ```
 
-The container runs only the hosted MCP server. It reads Plane configuration the
-same way as the CLI, with `PLANE_CLI_HOME` defaulting to `/data`.
-Deployment-specific secret injection should happen through ordinary environment
-variables or mounted config files.
+The container runs only the hosted MCP server. Hosted MCP does not own or store
+Plane credentials. Each MCP request must provide the Plane credential to use for
+that request:
+
+```text
+Authorization: Bearer <plane-oauth-access-token>
+```
+
+or:
+
+```text
+X-API-Key: <plane-api-key>
+```
+
+If no server-side `plane-cli` metadata config is mounted, the MCP treats the
+requested `workspace` value as the Plane workspace slug. A mounted config file
+may still provide non-secret workspace metadata such as `workspaceSlug`,
+`baseUrl`, and display names; hosted MCP ignores stored Plane credentials and
+uses only the request credential. Hosted MCP also refuses credential-persistence
+tools such as `auth_api_key`.
 
 Hosted MCP request handling is stateless: each HTTP request creates a fresh MCP
 transport/server, while the MCP `mcp-session-id` identifies session context.
@@ -270,12 +284,6 @@ That stores workspace/project defaults only for the current MCP session.
 Subsequent typed tools use that session context when `workspace` or `project` is
 omitted. Explicit tool arguments still win.
 
-Public binds require `PLANE_MCP_AUTH_TOKEN`; MCP clients must send it as:
-
-```text
-Authorization: Bearer <token>
-```
-
 Requests without an `Origin` header are allowed. Browser requests with an
 `Origin` header are accepted only from localhost/loopback origins by default. Set
 `PLANE_MCP_ALLOWED_ORIGINS` to a comma-separated allowlist when a browser-based
@@ -285,14 +293,9 @@ client must call a hosted deployment:
 PLANE_MCP_ALLOWED_ORIGINS=https://codex.example,https://hermes.example
 ```
 
-Localhost development can run without the token. Set
-`PLANE_MCP_ALLOW_UNAUTHENTICATED=true` only when another layer already restricts
-access to the endpoint.
-
-Credentials come from mounted normal `plane-cli` config files or environment
-variables only. There is no external secret store integration. Separate clients
-should use separate deployments, config files, or environment sets so workspace
-context and credentials stay isolated.
+Credentials are never loaded from hosted MCP server environment variables or
+server-owned config. Plane permissions are determined by the request credential
+that the MCP client sends.
 
 ## Commands
 

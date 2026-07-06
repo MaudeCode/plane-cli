@@ -5,6 +5,8 @@ import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
   type ConfigLoadOptions,
+  DEFAULT_BASE_URL,
+  type PlaneAuthConfig,
   type WorkspaceConfig,
   loadConfig,
   loadPublicConfig,
@@ -13,7 +15,13 @@ import {
   upsertOAuthWorkspaceConfig,
   upsertWorkspaceConfig,
 } from "./lib/config.js";
-import { AppError, ValidationAppError, exitCodes, toAppError } from "./lib/errors.js";
+import {
+  AppError,
+  ValidationAppError,
+  WorkspaceNotResolvedError,
+  exitCodes,
+  toAppError,
+} from "./lib/errors.js";
 import { jsonError, jsonSuccess } from "./lib/output.js";
 import {
   type FetchLike,
@@ -35,7 +43,9 @@ import {
 } from "./commands/registry.js";
 
 export type CliDeps = ConfigLoadOptions & {
+  disableCredentialPersistence?: boolean;
   fetch?: FetchLike;
+  planeAuth?: PlaneAuthConfig;
 };
 
 export type CliResult = {
@@ -59,6 +69,7 @@ export type CommandContext = {
   flags: Record<string, string | boolean | string[]>;
   home?: string;
   json: boolean;
+  planeAuth?: PlaneAuthConfig;
   positionals: string[];
 };
 
@@ -807,6 +818,9 @@ export async function runMcpCommand(
       tools: commandSpecs.map((candidate) => candidate.mcpName),
     });
   }
+  if (deps.disableCredentialPersistence && spec.category === "auth") {
+    throw new ValidationAppError("Hosted MCP does not store Plane credentials on the server.");
+  }
   const argv = mcpInputToArgv(spec, input);
   const parsed = mcpInputToContextInput(spec, input);
   await constrainMcpFileFlags(parsed.flags, deps.cwd);
@@ -818,6 +832,7 @@ export async function runMcpCommand(
     flags: parsed.flags,
     home: deps.home,
     json: true,
+    planeAuth: deps.planeAuth,
     positionals: parsed.positionals,
   };
   return spec.handler(context);
@@ -1706,18 +1721,69 @@ async function clientProjectIssue(
 }
 
 async function resolveCurrentWorkspace(context: CommandContext) {
-  const config = await loadConfig(loadOptions(context));
   const repo = await loadRepoWorkspaceHint({ cwd: context.cwd });
-  return resolveWorkspace({
-    config,
-    envWorkspace: context.env.PLANE_WORKSPACE,
-    explicitWorkspace: stringFlag(context, "workspace"),
-    repoWorkspace: repo?.workspace,
-  });
+  const explicitWorkspace = stringFlag(context, "workspace");
+  const envWorkspace = context.env.PLANE_WORKSPACE;
+
+  try {
+    const config = await loadConfig(loadOptions(context));
+    return resolveWorkspace({
+      config,
+      envWorkspace,
+      explicitWorkspace,
+      repoWorkspace: repo?.workspace,
+    });
+  } catch (error) {
+    if (
+      context.planeAuth &&
+      error instanceof AppError &&
+      (error.code === "CONFIG_NOT_FOUND" || error.code === "WORKSPACE_NOT_FOUND")
+    ) {
+      return synthesizeRequestWorkspace({
+        auth: context.planeAuth,
+        env: context.env,
+        envWorkspace,
+        explicitWorkspace,
+        repoWorkspace: repo?.workspace,
+      });
+    }
+    throw error;
+  }
 }
 
 function loadOptions(context: CommandContext): ConfigLoadOptions {
-  return { cwd: context.cwd, env: context.env, home: context.home };
+  return {
+    allowMissingCredentials: Boolean(context.planeAuth),
+    cwd: context.cwd,
+    env: context.env,
+    home: context.home,
+    planeAuth: context.planeAuth,
+  };
+}
+
+function synthesizeRequestWorkspace(options: {
+  auth: PlaneAuthConfig;
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>;
+  envWorkspace?: string;
+  explicitWorkspace?: string;
+  repoWorkspace?: string;
+}) {
+  const candidates = [
+    ["explicit", options.explicitWorkspace],
+    ["repo", options.repoWorkspace],
+    ["env", options.envWorkspace],
+  ] as const;
+  const selected = candidates.find(([, workspace]) => workspace);
+  if (!selected?.[1]) throw new WorkspaceNotResolvedError();
+  const [source, workspace] = selected;
+  const workspaceConfig: WorkspaceConfig = {
+    apiKey: options.auth.type === "apiKey" ? options.auth.apiKey : undefined,
+    auth: options.auth,
+    baseUrl: options.env.PLANE_BASE_URL ?? DEFAULT_BASE_URL,
+    name: workspace,
+    workspaceSlug: options.env.PLANE_WORKSPACE_SLUG ?? workspace,
+  };
+  return { source, workspace: workspaceConfig };
 }
 
 async function repoProject(context: CommandContext): Promise<string | undefined> {

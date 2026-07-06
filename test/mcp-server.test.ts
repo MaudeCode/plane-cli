@@ -134,7 +134,7 @@ describe("Plane MCP server", () => {
   test("serves typed tools over Streamable HTTP", async () => {
     const server = await startPlaneMcpHttpServer({ env: {}, host: "127.0.0.1", port: 0 });
     try {
-      const headers: Record<string, string> = {};
+      const headers: Record<string, string> = { authorization: "Bearer plane_user_token" };
       await rpc(server.url, "initialize", {
         capabilities: {},
         clientInfo: { name: "raw-json-rpc-test", version: "0.0.0" },
@@ -166,13 +166,23 @@ describe("Plane MCP server", () => {
     }
   });
 
-  test("requires an auth token for public hosted binds", async () => {
-    await expect(
-      startPlaneMcpHttpServer({ env: {}, host: "0.0.0.0", port: 0 }),
-    ).rejects.toThrow("PLANE_MCP_AUTH_TOKEN is required");
-    await expect(
-      startPlaneMcpHttpServer({ env: {}, host: "203.0.113.10", port: 0 }),
-    ).rejects.toThrow("PLANE_MCP_AUTH_TOKEN is required");
+  test("requires Plane credentials on hosted MCP requests", async () => {
+    const server = await startPlaneMcpHttpServer({ env: {}, host: "127.0.0.1", port: 0 });
+    try {
+      const res = await fetch(server.url, {
+        body: JSON.stringify({ id: "1", jsonrpc: "2.0", method: "tools/list" }),
+        headers: {
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+
+      expect(res.status).toBe(401);
+      await expect(res.json()).resolves.toEqual({ error: "Plane credentials are required" });
+    } finally {
+      await server.close();
+    }
   });
 
   test("formats IPv6 literal hosts in the advertised URL", async () => {
@@ -212,25 +222,27 @@ describe("Plane MCP server", () => {
     }
   });
 
-  test("enforces bearer auth when configured", async () => {
+  test("passes request bearer auth through to Plane instead of server config credentials", async () => {
+    const cwd = await tempDir();
+    await writeFile(
+      join(cwd, ".plane-cli.yaml"),
+      "defaultWorkspace: prod\nworkspaces:\n  prod:\n    workspaceSlug: acme\n    apiKey: server_secret_must_not_be_used\n",
+    );
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.headers).toMatchObject({ Authorization: "Bearer plane_user_token" });
+      expect(init?.headers).not.toMatchObject({ "X-API-Key": "server_secret_must_not_be_used" });
+      return response({ id: "USER-ID" });
+    });
     const server = await startPlaneMcpHttpServer({
-      authToken: "mcp-secret",
+      cwd,
       env: {},
+      fetch,
+      home: cwd,
       host: "127.0.0.1",
       port: 0,
     });
     try {
-      const unauthorized = await fetch(server.url, {
-        body: JSON.stringify({ id: "1", jsonrpc: "2.0", method: "tools/list" }),
-        headers: {
-          accept: "application/json, text/event-stream",
-          "content-type": "application/json",
-        },
-        method: "POST",
-      });
-      expect(unauthorized.status).toBe(401);
-
-      const headers = { authorization: "Bearer mcp-secret" };
+      const headers: Record<string, string> = { authorization: "Bearer plane_user_token" };
       await rpc(
         server.url,
         "initialize",
@@ -241,13 +253,51 @@ describe("Plane MCP server", () => {
         },
         headers,
       );
-      const listResponse = (await rpc(
+      await rpc(
         server.url,
-        "tools/list",
-        undefined,
+        "tools/call",
+        { arguments: { workspace: "prod" }, name: "user_me" },
         headers,
-      )) as { result: { tools: Array<{ name: string }> } };
-      expect(listResponse.result.tools.some((tool) => tool.name === "issue_get")).toBe(true);
+      );
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("uses request credentials without any server Plane config", async () => {
+    const cwd = await tempDir();
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(url).toContain("/api/v1/workspaces/acme/projects/");
+      expect(init?.headers).toMatchObject({ "X-API-Key": "plane_api_user_key" });
+      return response({ next_page_results: false, results: [{ id: "PROJECT-ID", name: "Web" }] });
+    });
+    const server = await startPlaneMcpHttpServer({
+      cwd,
+      env: {},
+      fetch,
+      home: cwd,
+      host: "127.0.0.1",
+      port: 0,
+    });
+    try {
+      const headers: Record<string, string> = { "x-api-key": "plane_api_user_key" };
+      await rpc(server.url, "initialize", {
+        capabilities: {},
+        clientInfo: { name: "pass-through-test", version: "0.0.0" },
+        protocolVersion: "2025-06-18",
+      }, headers);
+
+      const projects = (await rpc(server.url, "tools/call", {
+        arguments: { workspace: "acme" },
+        name: "project_list",
+      }, headers)) as { result: { structuredContent: unknown } };
+
+      expect(projects.result.structuredContent).toEqual({
+        data: [{ id: "PROJECT-ID", name: "Web" }],
+        ok: true,
+        workspace: "acme",
+      });
     } finally {
       await server.close();
     }
@@ -280,7 +330,7 @@ describe("Plane MCP server", () => {
       port: 0,
     });
     try {
-      const headers = { origin: "https://agent.example" };
+      const headers = { authorization: "Bearer plane_user_token", origin: "https://agent.example" };
       await rpc(server.url, "initialize", {
         capabilities: {},
         clientInfo: { name: "origin-test", version: "0.0.0" },
@@ -294,7 +344,6 @@ describe("Plane MCP server", () => {
 
   test("handles allowed CORS preflights before bearer auth", async () => {
     const server = await startPlaneMcpHttpServer({
-      authToken: "mcp-secret",
       env: { PLANE_MCP_ALLOWED_ORIGINS: "https://agent.example" },
       host: "127.0.0.1",
       port: 0,
@@ -365,6 +414,7 @@ describe("Plane MCP server", () => {
         body: JSON.stringify({ id: "1", jsonrpc: "2.0", method: "tools/list" }),
         headers: {
           accept: "application/json, text/event-stream",
+          authorization: "Bearer plane_user_token",
           "content-type": "application/json",
           "mcp-session-id": "session-a",
         },
@@ -465,6 +515,34 @@ describe("Plane MCP server", () => {
     }
   });
 
+  test("can disable credential persistence tools for hosted MCP", async () => {
+    const client = await connectClient(
+      createPlaneMcpServer({ disableCredentialPersistence: true, env: {} }),
+    );
+
+    try {
+      const result = await client.callTool({
+        arguments: {
+          api_key: "plane_api_secret",
+          workspace: "prod",
+          workspace_slug: "acme",
+        },
+        name: "auth_api_key",
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Hosted MCP does not store Plane credentials on the server.",
+        },
+        ok: false,
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
   test("isolates Plane context by MCP session id in a shared context store", async () => {
     const contextStore = createMemoryContextStore();
     const clientA = await connectClient(
@@ -525,7 +603,11 @@ describe("Plane MCP server", () => {
       const { StreamableHTTPClientTransport } = await import(
         "@modelcontextprotocol/sdk/client/streamableHttp.js"
       );
-      await client.connect(new StreamableHTTPClientTransport(new URL(server.url)));
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL(server.url), {
+          requestInit: { headers: { authorization: "Bearer plane_user_token" } },
+        }),
+      );
 
       await client.callTool({
         arguments: { project: "Web", workspace: "prod" },
@@ -578,7 +660,7 @@ describe("Plane MCP server", () => {
       port: 0,
     });
     try {
-      const headers: Record<string, string> = {};
+      const headers: Record<string, string> = { authorization: "Bearer plane_user_token" };
       await rpc(serverA.url, "initialize", {
         capabilities: {},
         clientInfo: { name: "non-sticky-test", version: "0.0.0" },
@@ -619,6 +701,7 @@ describe("Plane MCP server", () => {
         body: JSON.stringify({ id: "1", jsonrpc: "2.0", method: "tools/list" }),
         headers: {
           accept: "application/json, text/event-stream",
+          authorization: "Bearer plane_user_token",
           "content-type": "application/json",
           "mcp-session-id": "missing-session",
         },
@@ -670,6 +753,7 @@ describe("Plane MCP server", () => {
         }),
         headers: {
           accept: "application/json",
+          authorization: "Bearer plane_user_token",
           "content-type": "application/json",
         },
         method: "POST",
@@ -692,6 +776,7 @@ describe("Plane MCP server", () => {
         body: "{",
         headers: {
           accept: "application/json, text/event-stream",
+          authorization: "Bearer plane_user_token",
           "content-type": "application/json",
         },
         method: "POST",
@@ -712,7 +797,7 @@ describe("Plane MCP server", () => {
     const server = await startPlaneMcpHttpServer({ env: {}, host: "127.0.0.1", port: 0 });
     try {
       const res = await fetch(server.url, {
-        headers: { "mcp-session-id": "missing-session" },
+        headers: { authorization: "Bearer plane_user_token", "mcp-session-id": "missing-session" },
         method: "DELETE",
       });
 
@@ -729,7 +814,7 @@ describe("Plane MCP server", () => {
   test("allows DELETE requests for known Streamable HTTP session ids", async () => {
     const server = await startPlaneMcpHttpServer({ env: {}, host: "127.0.0.1", port: 0 });
     try {
-      const headers: Record<string, string> = {};
+      const headers: Record<string, string> = { authorization: "Bearer plane_user_token" };
       await rpc(server.url, "initialize", {
         capabilities: {},
         clientInfo: { name: "delete-session-test", version: "0.0.0" },

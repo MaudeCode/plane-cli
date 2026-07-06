@@ -1,5 +1,6 @@
 dist
 node_modules
+docs/
 *.tgz
 .plane-cli.yaml
 .plane-cli.json

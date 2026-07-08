@@ -818,7 +818,7 @@ export async function runMcpCommand(
       tools: commandSpecs.map((candidate) => candidate.mcpName),
     });
   }
-  if (deps.disableCredentialPersistence && spec.category === "auth") {
+  if (deps.disableCredentialPersistence && isCredentialPersistenceTool(spec.mcpName)) {
     throw new ValidationAppError("Hosted MCP does not store Plane credentials on the server.");
   }
   const argv = mcpInputToArgv(spec, input);
@@ -836,6 +836,15 @@ export async function runMcpCommand(
     positionals: parsed.positionals,
   };
   return spec.handler(context);
+}
+
+function isCredentialPersistenceTool(mcpName: string): boolean {
+  return (
+    mcpName === "auth_api_key" ||
+    mcpName === "auth_oauth_bot" ||
+    mcpName === "auth_oauth_code" ||
+    mcpName === "auth_oauth_login"
+  );
 }
 
 async function constrainMcpFileFlags(

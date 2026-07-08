@@ -265,10 +265,53 @@ describe("Plane MCP server", () => {
     }
   });
 
-  test("uses request credentials without any server Plane config", async () => {
+  test("prefers explicit API-key headers over bearer auth for Plane requests", async () => {
     const cwd = await tempDir();
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.headers).toMatchObject({ "X-API-Key": "plane_api_user_key" });
+      expect(init?.headers).not.toMatchObject({ Authorization: "Bearer unrelated_bearer" });
+      return response({ id: "USER-ID" });
+    });
+    const server = await startPlaneMcpHttpServer({
+      cwd,
+      env: {},
+      fetch,
+      home: cwd,
+      host: "127.0.0.1",
+      port: 0,
+    });
+    try {
+      const headers: Record<string, string> = {
+        authorization: "Bearer unrelated_bearer",
+        "x-plane-api-key": "plane_api_user_key",
+      };
+      await rpc(
+        server.url,
+        "initialize",
+        {
+          capabilities: {},
+          clientInfo: { name: "auth-precedence-test", version: "0.0.0" },
+          protocolVersion: "2025-06-18",
+        },
+        headers,
+      );
+      await rpc(
+        server.url,
+        "tools/call",
+        { arguments: { workspace: "prod" }, name: "user_me" },
+        headers,
+      );
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("uses request credentials and session context without any server Plane config", async () => {
+    const cwd = await tempDir();
+    const requestedUrls: string[] = [];
     const fetch = vi.fn(async (url: string, init?: RequestInit) => {
-      expect(url).toContain("/api/v1/workspaces/acme/projects/");
+      requestedUrls.push(url);
       expect(init?.headers).toMatchObject({ "X-API-Key": "plane_api_user_key" });
       return response({ next_page_results: false, results: [{ id: "PROJECT-ID", name: "Web" }] });
     });
@@ -288,8 +331,12 @@ describe("Plane MCP server", () => {
         protocolVersion: "2025-06-18",
       }, headers);
 
+      await rpc(server.url, "tools/call", {
+        arguments: { project: "Web", workspace: "acme" },
+        name: "plane_context_set",
+      }, headers);
       const projects = (await rpc(server.url, "tools/call", {
-        arguments: { workspace: "acme" },
+        arguments: {},
         name: "project_list",
       }, headers)) as { result: { structuredContent: unknown } };
 
@@ -298,6 +345,7 @@ describe("Plane MCP server", () => {
         ok: true,
         workspace: "acme",
       });
+      expect(requestedUrls).toEqual(["https://api.plane.so/api/v1/workspaces/acme/projects/"]);
     } finally {
       await server.close();
     }
@@ -537,6 +585,37 @@ describe("Plane MCP server", () => {
           message: "Hosted MCP does not store Plane credentials on the server.",
         },
         ok: false,
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("allows OAuth URL generation for hosted MCP", async () => {
+    const client = await connectClient(
+      createPlaneMcpServer({ disableCredentialPersistence: true, env: {} }),
+    );
+
+    try {
+      const result = await client.callTool({
+        arguments: {
+          base_url: "https://plane.thezoo.house/",
+          client_id: "client-id",
+          redirect_uri: "http://127.0.0.1:8717/callback",
+          scope: ["read:workspace", "write:issue"],
+          state: "state-token",
+        },
+        name: "auth_oauth_url",
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toEqual({
+        data: {
+          state: "state-token",
+          url:
+            "https://plane.thezoo.house/auth/o/authorize-app/?client_id=client-id&redirect_uri=http%3A%2F%2F127.0.0.1%3A8717%2Fcallback&response_type=code&scope=read%3Aworkspace+write%3Aissue&state=state-token",
+        },
+        ok: true,
       });
     } finally {
       await client.close();

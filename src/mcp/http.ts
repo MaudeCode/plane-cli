@@ -212,6 +212,10 @@ function isLocalHost(host: string): boolean {
 }
 
 function readPlaneAuth(req: IncomingMessage): PlaneAuthConfig | undefined {
+  const apiKey =
+    headerString(req.headers["x-api-key"]) ?? headerString(req.headers["x-plane-api-key"]);
+  if (apiKey) return { apiKey, type: "apiKey" };
+
   const authorization = req.headers.authorization;
   if (typeof authorization === "string") {
     const match = /^Bearer\s+(.+)$/i.exec(authorization.trim());
@@ -219,8 +223,7 @@ function readPlaneAuth(req: IncomingMessage): PlaneAuthConfig | undefined {
     if (accessToken) return { accessToken, type: "oauth" };
   }
 
-  const apiKey = headerString(req.headers["x-api-key"]) ?? headerString(req.headers["x-plane-api-key"]);
-  return apiKey ? { apiKey, type: "apiKey" } : undefined;
+  return undefined;
 }
 
 function headerString(value: string | string[] | undefined): string | undefined {

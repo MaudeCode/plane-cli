@@ -216,7 +216,7 @@ describe("PlaneClient", () => {
     ]);
   });
 
-  test("rejects plaintext base URLs for non-local hosts", async () => {
+  test("allows HTTP base URLs", async () => {
     const fetch = vi.fn<FetchLike>(async () => jsonResponse({ results: [] }));
     const client = new PlaneClient(
       {
@@ -226,13 +226,14 @@ describe("PlaneClient", () => {
       { fetch },
     );
 
-    await expect(client.listProjects()).rejects.toMatchObject({
-      code: "CONFIG_INVALID",
-    });
-    expect(fetch).not.toHaveBeenCalled();
+    await client.listProjects();
+    expect(fetch).toHaveBeenCalledWith(
+      "http://example.test/api/v1/workspaces/acme/projects/",
+      expect.any(Object),
+    );
   });
 
-  test("allows plaintext base URLs for localhost and private-network development", async () => {
+  test("allows HTTP base URLs for localhost, private-network development, and Kubernetes services", async () => {
     const urls: string[] = [];
     const fetch: FetchLike = async (url) => {
       urls.push(url);
@@ -240,13 +241,25 @@ describe("PlaneClient", () => {
     };
     const localhostClient = new PlaneClient({ ...workspace, baseUrl: "http://localhost:3000/" }, { fetch });
     const privateClient = new PlaneClient({ ...workspace, baseUrl: "http://192.168.1.10/" }, { fetch });
+    const shortKubernetesClient = new PlaneClient(
+      { ...workspace, baseUrl: "http://plane-api.services.svc:8000/" },
+      { fetch },
+    );
+    const fullKubernetesClient = new PlaneClient(
+      { ...workspace, baseUrl: "http://plane-api.services.svc.cluster.local:8000/" },
+      { fetch },
+    );
 
     await localhostClient.listProjects();
     await privateClient.listProjects();
+    await shortKubernetesClient.listProjects();
+    await fullKubernetesClient.listProjects();
 
     expect(urls).toEqual([
       "http://localhost:3000/api/v1/workspaces/acme/projects/",
       "http://192.168.1.10/api/v1/workspaces/acme/projects/",
+      "http://plane-api.services.svc:8000/api/v1/workspaces/acme/projects/",
+      "http://plane-api.services.svc.cluster.local:8000/api/v1/workspaces/acme/projects/",
     ]);
   });
 

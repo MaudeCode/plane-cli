@@ -491,10 +491,10 @@ export class PlaneClient {
 
   private url(path: string, query: Query = {}): string {
     const url = new URL(path.replace(/^\/+/, ""), `${this.workspace.baseUrl.replace(/\/+$/, "")}/`);
-    if (url.protocol !== "https:" && (url.protocol !== "http:" || !isAllowedPlaintextHost(url.hostname))) {
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
       throw new AppError(
         "CONFIG_INVALID",
-        "Plane workspace baseUrl must use HTTPS unless it points to local development.",
+        "Plane workspace baseUrl must use HTTP or HTTPS.",
         exitCodes.validationOrConfig,
         { baseUrl: this.workspace.baseUrl },
       );
@@ -627,28 +627,6 @@ function safeJson(text: string): JsonValue {
 
 function asObject(data: JsonValue): JsonObject {
   return typeof data === "object" && data !== null && !Array.isArray(data) ? data : { value: data };
-}
-
-function isAllowedPlaintextHost(hostname: string): boolean {
-  const host = hostname.toLowerCase();
-  if (host === "localhost" || host.endsWith(".localhost") || host === "::1" || host === "[::1]") {
-    return true;
-  }
-
-  const parts = host.split(".");
-  if (parts.length !== 4) return false;
-  const octets = parts.map((part) => Number(part));
-  if (octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return false;
-  const [first, second] = octets;
-  if (first === undefined || second === undefined) return false;
-
-  return (
-    first === 10 ||
-    first === 127 ||
-    (first === 172 && second >= 16 && second <= 31) ||
-    (first === 192 && second === 168) ||
-    (first === 169 && second === 254)
-  );
 }
 
 function isJsonValue(value: unknown): value is JsonValue {

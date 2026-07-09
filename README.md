@@ -233,7 +233,7 @@ Plane credentials. Each MCP request must provide the Plane credential to use for
 that request:
 
 ```text
-Authorization: Bearer <plane-oauth-access-token>
+Authorization: Bearer <plane-oauth-access-token-or-plane_api_key>
 ```
 
 or:
@@ -241,6 +241,10 @@ or:
 ```text
 X-API-Key: <plane-api-key>
 ```
+
+`Authorization: Bearer plane_api_...` is treated as a Plane API key so clients
+that only support bearer-token MCP configuration can still pass user credentials
+through without server-owned credentials.
 
 If no server-side `plane-cli` metadata config is mounted, the MCP treats the
 requested `workspace` value as the Plane workspace slug. A mounted config file

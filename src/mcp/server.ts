@@ -32,7 +32,7 @@ export function createPlaneMcpServer(options: PlaneMcpServerOptions = {}): McpSe
   const server = new McpServer(
     {
       name: options.name ?? "plane-cli",
-      version: options.version ?? "0.2.0",
+      version: options.version ?? "0.2.1",
     },
     { instructions },
   );

@@ -219,11 +219,19 @@ function readPlaneAuth(req: IncomingMessage): PlaneAuthConfig | undefined {
   const authorization = req.headers.authorization;
   if (typeof authorization === "string") {
     const match = /^Bearer\s+(.+)$/i.exec(authorization.trim());
-    const accessToken = match?.[1]?.trim();
-    if (accessToken) return { accessToken, type: "oauth" };
+    const bearerToken = match?.[1]?.trim();
+    if (bearerToken) {
+      return isPlaneApiKey(bearerToken)
+        ? { apiKey: bearerToken, type: "apiKey" }
+        : { accessToken: bearerToken, type: "oauth" };
+    }
   }
 
   return undefined;
+}
+
+function isPlaneApiKey(value: string): boolean {
+  return value.startsWith("plane_api_");
 }
 
 function headerString(value: string | string[] | undefined): string | undefined {

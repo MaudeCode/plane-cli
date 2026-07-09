@@ -222,7 +222,7 @@ describe("Plane MCP server", () => {
     }
   });
 
-  test("passes request bearer auth through to Plane instead of server config credentials", async () => {
+  test("passes request OAuth bearer auth through to Plane instead of server config credentials", async () => {
     const cwd = await tempDir();
     await writeFile(
       join(cwd, ".plane-cli.yaml"),
@@ -249,6 +249,45 @@ describe("Plane MCP server", () => {
         {
           capabilities: {},
           clientInfo: { name: "auth-test", version: "0.0.0" },
+          protocolVersion: "2025-06-18",
+        },
+        headers,
+      );
+      await rpc(
+        server.url,
+        "tools/call",
+        { arguments: { workspace: "prod" }, name: "user_me" },
+        headers,
+      );
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("accepts Plane API keys through bearer auth for Codex HTTP MCP config", async () => {
+    const cwd = await tempDir();
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.headers).toMatchObject({ "X-API-Key": "plane_api_user_key" });
+      expect(init?.headers).not.toMatchObject({ Authorization: "Bearer plane_api_user_key" });
+      return response({ id: "USER-ID" });
+    });
+    const server = await startPlaneMcpHttpServer({
+      cwd,
+      env: {},
+      fetch,
+      home: cwd,
+      host: "127.0.0.1",
+      port: 0,
+    });
+    try {
+      const headers: Record<string, string> = { authorization: "Bearer plane_api_user_key" };
+      await rpc(
+        server.url,
+        "initialize",
+        {
+          capabilities: {},
+          clientInfo: { name: "bearer-api-key-test", version: "0.0.0" },
           protocolVersion: "2025-06-18",
         },
         headers,

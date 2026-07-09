@@ -64,6 +64,7 @@ const mcpFileFlags = new Set(["description-file", "file", "filters-file"]);
 export type CommandContext = {
   argv: string[];
   cwd?: string;
+  disableCredentialPersistence?: boolean;
   env: NodeJS.ProcessEnv | Record<string, string | undefined>;
   fetch?: FetchLike;
   flags: Record<string, string | boolean | string[]>;
@@ -827,6 +828,7 @@ export async function runMcpCommand(
   const context: CommandContext = {
     argv,
     cwd: deps.cwd,
+    disableCredentialPersistence: deps.disableCredentialPersistence,
     env: deps.env ?? process.env,
     fetch: deps.fetch,
     flags: parsed.flags,
@@ -1154,10 +1156,24 @@ async function authOAuthLogin(context: CommandContext): Promise<CommandResult> {
 }
 
 async function configShow(context: CommandContext): Promise<CommandResult> {
+  if (context.disableCredentialPersistence && context.planeAuth) {
+    return { data: await hostedRequestConfig(context) };
+  }
   return { data: await loadPublicConfig(loadOptions(context)) };
 }
 
 async function configPath(context: CommandContext): Promise<CommandResult> {
+  if (context.disableCredentialPersistence) {
+    const data = {
+      credentialSource: context.planeAuth ? "request" : "none",
+      hosted: true,
+      path: null,
+    };
+    return {
+      data,
+      human: "Hosted MCP uses request credentials and has no server config file.",
+    };
+  }
   const config = await loadConfig(loadOptions(context));
   return { data: { path: config.configPath }, human: config.configPath };
 }
@@ -1748,11 +1764,12 @@ async function resolveCurrentWorkspace(context: CommandContext) {
       error instanceof AppError &&
       (error.code === "CONFIG_NOT_FOUND" || error.code === "WORKSPACE_NOT_FOUND")
     ) {
-      return synthesizeRequestWorkspace({
+      return await synthesizeRequestWorkspace({
         auth: context.planeAuth,
         env: context.env,
         envWorkspace,
         explicitWorkspace,
+        fetch: context.fetch,
         repoWorkspace: repo?.workspace,
       });
     }
@@ -1770,11 +1787,12 @@ function loadOptions(context: CommandContext): ConfigLoadOptions {
   };
 }
 
-function synthesizeRequestWorkspace(options: {
+async function synthesizeRequestWorkspace(options: {
   auth: PlaneAuthConfig;
   env: NodeJS.ProcessEnv | Record<string, string | undefined>;
   envWorkspace?: string;
   explicitWorkspace?: string;
+  fetch?: FetchLike;
   repoWorkspace?: string;
 }) {
   const candidates = [
@@ -1785,14 +1803,57 @@ function synthesizeRequestWorkspace(options: {
   const selected = candidates.find(([, workspace]) => workspace);
   if (!selected?.[1]) throw new WorkspaceNotResolvedError();
   const [source, workspace] = selected;
+  const baseUrl = options.env.PLANE_BASE_URL ?? DEFAULT_BASE_URL;
+  const workspaceSlug =
+    options.env.PLANE_WORKSPACE_SLUG ??
+    (await discoverWorkspaceSlug({
+      auth: options.auth,
+      baseUrl,
+      fetch: options.fetch,
+      workspace,
+    }));
   const workspaceConfig: WorkspaceConfig = {
     apiKey: options.auth.type === "apiKey" ? options.auth.apiKey : undefined,
     auth: options.auth,
-    baseUrl: options.env.PLANE_BASE_URL ?? DEFAULT_BASE_URL,
+    baseUrl,
     name: workspace,
-    workspaceSlug: options.env.PLANE_WORKSPACE_SLUG ?? workspace,
+    workspaceSlug,
   };
   return { source, workspace: workspaceConfig };
+}
+
+async function hostedRequestConfig(context: CommandContext) {
+  const baseUrl = context.env.PLANE_BASE_URL ?? DEFAULT_BASE_URL;
+  try {
+    const resolution = await resolveCurrentWorkspace(context);
+    return {
+      credentialSource: "request",
+      defaultWorkspace: resolution.workspace.name,
+      hosted: true,
+      path: null,
+      workspaces: [
+        {
+          authType: resolution.workspace.auth?.type ?? (resolution.workspace.apiKey ? "apiKey" : undefined),
+          baseUrl: resolution.workspace.baseUrl,
+          displayName: resolution.workspace.displayName,
+          name: resolution.workspace.name,
+          workspaceSlug: resolution.workspace.workspaceSlug,
+        },
+      ],
+    };
+  } catch (error) {
+    if (error instanceof WorkspaceNotResolvedError) {
+      return {
+        baseUrl,
+        credentialSource: "request",
+        defaultWorkspace: context.env.PLANE_WORKSPACE,
+        hosted: true,
+        path: null,
+        workspaces: [],
+      };
+    }
+    throw error;
+  }
 }
 
 async function repoProject(context: CommandContext): Promise<string | undefined> {

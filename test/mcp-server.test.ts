@@ -352,6 +352,9 @@ describe("Plane MCP server", () => {
     const fetch = vi.fn(async (url: string, init?: RequestInit) => {
       requestedUrls.push(url);
       expect(init?.headers).toMatchObject({ "X-API-Key": "plane_api_user_key" });
+      if (url.endsWith("/api/workspaces/")) {
+        return response([{ id: "WORKSPACE-ID", name: "acme", slug: "acme" }]);
+      }
       return response({ next_page_results: false, results: [{ id: "PROJECT-ID", name: "Web" }] });
     });
     const server = await startPlaneMcpHttpServer({
@@ -384,7 +387,10 @@ describe("Plane MCP server", () => {
         ok: true,
         workspace: "acme",
       });
-      expect(requestedUrls).toEqual(["https://api.plane.so/api/v1/workspaces/acme/projects/"]);
+      expect(requestedUrls).toEqual([
+        "https://api.plane.so/api/workspaces/",
+        "https://api.plane.so/api/v1/workspaces/acme/projects/",
+      ]);
     } finally {
       await server.close();
     }
@@ -625,6 +631,117 @@ describe("Plane MCP server", () => {
         },
         ok: false,
       });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("reports hosted request config instead of server config files", async () => {
+    const cwd = await tempDir();
+    const fetch = vi.fn(async () =>
+      response([{ id: "WORKSPACE-ID", name: "MaudeCode", slug: "maudecode" }]),
+    );
+    const client = await connectClient(
+      createPlaneMcpServer({
+        cwd,
+        disableCredentialPersistence: true,
+        env: { PLANE_BASE_URL: "http://plane-api.services.svc.cluster.local:8000" },
+        fetch,
+        home: cwd,
+        planeAuth: { apiKey: "plane_api_secret", type: "apiKey" },
+      }),
+    );
+
+    try {
+      const pathResult = await client.callTool({
+        arguments: { workspace: "MaudeCode" },
+        name: "config_path",
+      });
+      const showResult = await client.callTool({
+        arguments: { workspace: "MaudeCode" },
+        name: "config_show",
+      });
+
+      expect(pathResult.isError).not.toBe(true);
+      expect(pathResult.structuredContent).toEqual({
+        data: {
+          credentialSource: "request",
+          hosted: true,
+          path: null,
+        },
+        ok: true,
+      });
+      expect(showResult.isError).not.toBe(true);
+      expect(showResult.structuredContent).toEqual({
+        data: {
+          credentialSource: "request",
+          defaultWorkspace: "MaudeCode",
+          hosted: true,
+          path: null,
+          workspaces: [
+            {
+              authType: "apiKey",
+              baseUrl: "http://plane-api.services.svc.cluster.local:8000",
+              displayName: undefined,
+              name: "MaudeCode",
+              workspaceSlug: "maudecode",
+            },
+          ],
+        },
+        ok: true,
+      });
+    } finally {
+      await client.close();
+    }
+    expect(fetch).toHaveBeenCalledWith(
+      "http://plane-api.services.svc.cluster.local:8000/api/workspaces/",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "X-API-Key": "plane_api_secret" }),
+        method: "GET",
+      }),
+    );
+  });
+
+  test("discovers request-backed workspace slugs for hosted MCP without server config", async () => {
+    const cwd = await tempDir();
+    const requestedUrls: string[] = [];
+    const fetch = vi.fn(async (url: string) => {
+      requestedUrls.push(url);
+      if (url.endsWith("/api/workspaces/")) {
+        return response([{ id: "WORKSPACE-ID", name: "MaudeCode", slug: "maudecode" }]);
+      }
+      return response({ next_page_results: false, results: [{ id: "PROJECT-ID", name: "Web" }] });
+    });
+    const client = await connectClient(
+      createPlaneMcpServer({
+        cwd,
+        disableCredentialPersistence: true,
+        env: { PLANE_BASE_URL: "http://plane-api.services.svc.cluster.local:8000" },
+        fetch,
+        home: cwd,
+        planeAuth: { apiKey: "plane_api_secret", type: "apiKey" },
+      }),
+    );
+
+    try {
+      const contextResult = await client.callTool({
+        arguments: { workspace: "MaudeCode", project: "Plane CLI" },
+        name: "plane_context_set",
+      });
+      const projects = await client.callTool({
+        arguments: {},
+        name: "project_list",
+      });
+
+      expect(contextResult.structuredContent).toEqual({
+        data: { project: "Plane CLI", workspace: "MaudeCode" },
+        ok: true,
+      });
+      expect(projects.isError).not.toBe(true);
+      expect(requestedUrls).toEqual([
+        "http://plane-api.services.svc.cluster.local:8000/api/workspaces/",
+        "http://plane-api.services.svc.cluster.local:8000/api/v1/workspaces/maudecode/projects/",
+      ]);
     } finally {
       await client.close();
     }
